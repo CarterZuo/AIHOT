@@ -6,10 +6,27 @@ import { closeDb, sql } from "@aihot/backend/db";
 import { IngestError, ingestItems } from "@aihot/backend/ingest/items";
 import { stopBoss } from "@aihot/backend/jobs/queue";
 import { tag } from "./setup.ts";
+import { SOURCE_DEFAULTS } from "@aihot/site";
 
 after(async () => {
   await stopBoss();
   await closeDb();
+});
+
+test("new external sources follow site fulltext defaults without leaving isolation or enabling redistribution", async () => {
+  const sourceId = `test-default-ingest-${tag()}`;
+  await ingestItems({ sourceId, items: [{ title: "First report", url: `https://example.org/${sourceId}/first` }] });
+  const [created] = await sql`SELECT site_fulltext, syndicate_fulltext, participation_mode FROM sources WHERE id = ${sourceId}`;
+  assert.equal(created!.site_fulltext, SOURCE_DEFAULTS.siteFulltext);
+  assert.equal(created!.syndicate_fulltext, false);
+  assert.equal(created!.participation_mode, "isolated");
+
+  await sql`UPDATE sources SET site_fulltext = ${!SOURCE_DEFAULTS.siteFulltext} WHERE id = ${sourceId}`;
+  await ingestItems({ sourceId, items: [{ title: "Later report", url: `https://example.org/${sourceId}/later` }] });
+  const [retained] = await sql`SELECT site_fulltext, syndicate_fulltext, participation_mode FROM sources WHERE id = ${sourceId}`;
+  assert.equal(retained!.site_fulltext, !SOURCE_DEFAULTS.siteFulltext);
+  assert.equal(retained!.syndicate_fulltext, false);
+  assert.equal(retained!.participation_mode, "isolated");
 });
 
 test("a paused external source rejects pushed items without recording a successful fetch", async () => {

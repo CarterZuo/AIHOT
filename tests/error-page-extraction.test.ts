@@ -68,6 +68,12 @@ test("soft 404 and security interstitials cannot become native article bodies", 
   assert.ok(readable(html("Why 404 errors happen", prose), `${base}/valid`)?.text.includes(prose.trim()));
 });
 
+test("a missing declared body does not fall back to a paid unscoped reader", async () => {
+  const hits = readerHits;
+  assert.equal(await extractFromUrl(`${base}/article`, `selector-${T}`, { bodySelector: ".missing-body" }), null);
+  assert.equal(readerHits, hits);
+});
+
 test("a missing target stays unconfirmed and its paid response is reused, not bought again", async () => {
   const excerpt = "The publisher's actual feed description remains available.";
   const { articleId } = await upsertMaterial({ sourceId, url: `${base}/${T}/missing`, title: "A real headline", excerpt, via: "fetch" });

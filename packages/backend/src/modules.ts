@@ -6,6 +6,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { WorkOptions } from "pg-boss";
 import type { z } from "zod";
 import type { Brand } from "@aihot/contracts/site";
+import type { Candidate, SourceRow } from "./sources/types.ts";
+import type { fetchDetail } from "./sources/web-list.ts";
 import type { Db } from "./db.ts";
 import type { QueueOptions } from "./jobs/queue.ts";
 import type { Finding } from "./notify/feishu.ts";
@@ -234,6 +236,12 @@ export interface ServerModule {
     /** Company marks by topic slug, drawn over the engine's monograms. */
     marks?: () => Promise<Record<string, Brand>>;
   };
+  /** Site-specific JSON listing/detail adapters, used by preview and scheduled collection alike. */
+  sourceAdapters?: Record<string, {
+    kind: "json_list";
+    listing: (source: SourceRow) => Promise<Candidate[]>;
+    detail?: (url: string, source: SourceRow) => ReturnType<typeof fetchDetail>;
+  }>;
   /**
    * Source kinds it collects in its own way (admin/sources.ts), by kind: `resumed` runs in the transaction
    * that enables a paused source of that kind, before its row is written; `fetchNow` takes over the admin's

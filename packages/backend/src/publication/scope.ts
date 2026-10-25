@@ -15,7 +15,7 @@ export function foldableSelectionCondition() {
  * Only confirmed news enters p.selected (publish.ts). The release timestamp also supports
  * historical imports and ensures every outlet uses the same actual publication time.
  */
-export function releasedCondition(now: Date) {
+export function releasedCondition(now: Date | ReturnType<typeof sql>) {
   return sql`(NOT p.selected OR p.visible_after <= ${now})`;
 }
 
@@ -25,7 +25,7 @@ export function listedCondition(now: Date) {
 }
 
 /** Story reports include older editorial material outside the pool, but never withdrawn or not yet released content. */
-export function storyReportCondition(now: Date) {
+export function storyReportCondition(now: Date | ReturnType<typeof sql>) {
   return sql`p.visibility = 'public' AND s.participation_mode = 'editorial' AND ${releasedCondition(now)}`;
 }
 

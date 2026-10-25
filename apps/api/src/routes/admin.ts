@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { AdminSourceUpdate } from "@aihot/contracts/admin";
 import { actorOf } from "@aihot/backend/admin/auth";
 import { navCounts } from "@aihot/backend/admin/navigation";
+import { adoptReportSummary } from "@aihot/backend/admin/reports";
 import { listAudit } from "@aihot/backend/audit";
 import { importSelectBenchRun, listSelectBenchRuns, selectBenchRun } from "@aihot/backend/admin/selectbench";
 import { modelsOverview, switchModel } from "@aihot/backend/admin/models";
@@ -66,6 +67,10 @@ export function registerAdmin(app: FastifyInstance) {
     const b = body<{ from: number; into: number; reason: string }>(req);
     return mergeStories(Number(b.from), Number(b.into), b.reason, actorOf(admin));
   }));
+
+  // Frozen report corrections
+  app.post("/api/admin/reports/:id/summary-correction", adminHandler(async (req, _reply, admin) =>
+    adoptReportSummary(Number(param(req, "id")), body(req) as never, actorOf(admin))));
 
   // Feedback
   app.get("/api/admin/feedback", adminHandler(async (req) => listFeedback({ status: q(req).status, q: q(req).q, page: page(req) })));

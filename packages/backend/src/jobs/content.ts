@@ -150,10 +150,10 @@ async function processRevision(articleId: string, row: NonNullable<Awaited<Retur
     }
     if (result.stale) return { state: "stale" }; // the newer revision has its own job
     await publishArticle(articleId);
-    if (needsGrouping({ participationMode: row.participation_mode, historical: row.historical, relevance: result.output.relevance })) await enqueue(QUEUES.group, { articleId }, { singletonKey: articleId, priority: groupingPriority({ signal: false, historical: row.historical }) });
+    if (!result.output.qualityHeld && needsGrouping({ participationMode: row.participation_mode, historical: row.historical, relevance: result.output.relevance })) await enqueue(QUEUES.group, { articleId }, { singletonKey: articleId, priority: groupingPriority({ signal: false, historical: row.historical }) });
     await sql`UPDATE articles SET processing_attempts = 0, processing_retry_at = NULL, processing_queued_at = NULL
               WHERE id = ${articleId} AND revision = ${row.revision}`;
-    return { state: result.output.relevance };
+    return { state: result.output.qualityHeld ? "quality-held" : result.output.relevance };
   } catch (error) {
     if (shutdownSignal.signal.aborted) throw error;
     if (failureKind(error) === "unknown") {

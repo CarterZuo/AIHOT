@@ -4,7 +4,7 @@ import { addAbortListener } from "node:events";
 import { Agent, Pool, ProxyAgent, fetch as undiciFetch, type Dispatcher } from "undici";
 import { config } from "../config.ts";
 import { assertPublicUrl, guardedLookup } from "./url.ts";
-import { createEgressProxy, createEgressResolver, OUTBOUND_HTTP_OPTIONS } from "./egress-proxy.ts";
+import { createDirectResolver, createEgressProxy, createEgressResolver, OUTBOUND_HTTP_OPTIONS } from "./egress-proxy.ts";
 import { DEPLOYMENT, SITE } from "@aihot/site";
 
 /**
@@ -24,6 +24,11 @@ let proxyAgent: ProxyAgent | null = null;
 let directAgent: Agent | null = null;
 let privateFeedAgent: Agent | null = null;
 let resolveEgress: ReturnType<typeof createEgressResolver> | null = null;
+
+let resolveDirect: ReturnType<typeof createDirectResolver> | null = null;
+function directResolver() {
+  return config.outboundDnsUrl ? resolveDirect ??= createDirectResolver(config.outboundDnsUrl) : undefined;
+}
 
 function egressResolver() {
   return resolveEgress ??= createEgressResolver(config.egressProxyUrl!);
@@ -59,7 +64,7 @@ function dispatcherFor(viaProxy: boolean, privateHost: boolean): Dispatcher | un
     return privateFeedAgent;
   }
   // Direct connections resolve through the guarded lookup: the address actually dialled is checked.
-  directAgent ??= new Agent({ ...OUTBOUND_HTTP_OPTIONS, connect: { lookup: guardedLookup as never }, factory: destinationPool });
+  directAgent ??= new Agent({ ...OUTBOUND_HTTP_OPTIONS, connect: { lookup: ((hostname: string, options: never, callback: never) => guardedLookup(hostname, options, callback, [], directResolver())) as never }, factory: destinationPool });
   return directAgent;
 }
 
@@ -123,7 +128,7 @@ export async function guardedFetch(input: string, opts: GuardedFetchOptions = {}
   const configuredHost = hostOf(new URL(input));
   const privateHosts = opts.privateFeedHost && config.privateFeedHosts.includes(configuredHost) ? [configuredHost] : [];
   const check = (target: string) => withinDeadline(assertPublicUrl(target, config.allowPrivateNetworkFetch,
-    proxied(new URL(target), route, privateHosts) ? egressResolver() : undefined, privateHosts), signal);
+    proxied(new URL(target), route, privateHosts) ? egressResolver() : privateHosts.includes(hostOf(new URL(target))) ? undefined : directResolver(), privateHosts), signal);
   let url = await check(input);
   const maxRedirects = opts.maxRedirects ?? 5;
   const maxBytes = opts.maxBytes ?? 8 * 1024 * 1024;

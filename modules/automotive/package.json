@@ -1,0 +1,8 @@
+{
+  "name": "@aihot/automotive",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./server": "./server.ts"
+  }
+}

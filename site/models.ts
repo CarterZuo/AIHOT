@@ -1,52 +1,47 @@
-// 这个站用哪些模型。框架自带一个 `default`：环境变量 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL 指定的模型。
-// 这里再列出具名的模型（每个用自己的地址和密钥环境变量），以及每一步默认用哪个；没写的步骤用 default。
-// 部署时还可以用环境变量（PREFILTER_MODEL、SCORE_MODEL……）或后台的“模型与评测”页逐步改选。
-
+// 本站模型统一通过本机 Magpie 的 OpenAI 兼容入口。
+// 清单来自 2026-10-25 /v1/models；新增或移除模型后需同步本配置并重启API/worker。
+// 具名项为可选模型，不代表全业务评测通过；本机已评测步骤的后台选择见 docs/local-development.md。
+// 先保留文本输入；图像与各模型参数经样本评测后另行启用。
 import type { ModelPreset } from "@aihot/contracts/site-config";
 export type { ModelPreset } from "@aihot/contracts/site-config";
 
-/** 具名的模型示例（每个要配自己的密钥）。用不上可以删掉。 */
 export const PRESETS: Record<string, ModelPreset> = {
-  // GLM 5.3 Flash always reasons; the lowest effort keeps short structured tasks fast.
-  "glm-5.3-flash": {
-    service: "zhipu", model: "glm-5.3-flash", baseUrlEnv: "ZHIPU_BASE_URL", apiKeyEnv: "ZHIPU_API_KEY",
-    extra: { thinking: { type: "enabled" }, reasoning_effort: "low" }, jsonMode: true, vision: true,
+  "magpie/codex/gpt-6.1-sol": {
+    service: "llm", model: "codex/gpt-6.1-sol",
+    baseUrlEnv: "LLM_BASE_URL", apiKeyEnv: "LLM_API_KEY",
+    reasoningTokens: 4096, jsonMode: true, vision: false,
   },
-  // The scorer's parameters for glm-5.3-flash: temperature 1 with high reasoning, up to 180 s per call.
-  "glm-5.3-flash-selection": {
-    service: "zhipu", model: "glm-5.3-flash", baseUrlEnv: "ZHIPU_BASE_URL", apiKeyEnv: "ZHIPU_API_KEY",
-    extra: { thinking: { type: "enabled", clear_thinking: false }, reasoning_effort: "high", top_p: 0.95 }, jsonMode: true, vision: true,
-    scoreCall: { temperature: 1, maxTokens: 65_536, timeoutMs: 180_000 },
+  "magpie/codex/gpt-6-astra": {
+    service: "llm", model: "codex/gpt-6-astra",
+    baseUrlEnv: "LLM_BASE_URL", apiKeyEnv: "LLM_API_KEY",
+    reasoningTokens: 4096, jsonMode: true, vision: false,
   },
-  // DeepSeek Flash reasons by default; structured tasks switch it off. deepseek-flash-think keeps it on,
-  // with room in the output for the reasoning.
-  "deepseek-flash": {
-    service: "deepseek", model: "deepseek-flash", baseUrlEnv: "DEEPSEEK_BASE_URL", apiKeyEnv: "DEEPSEEK_API_KEY",
-    extra: { thinking: { type: "disabled" } }, jsonMode: true,
+  "magpie/codex/gpt-6-luna": {
+    service: "llm", model: "codex/gpt-6-luna",
+    baseUrlEnv: "LLM_BASE_URL", apiKeyEnv: "LLM_API_KEY",
+    reasoningTokens: 4096, jsonMode: true, vision: false,
   },
-  "deepseek-flash-think": {
-    service: "deepseek", model: "deepseek-flash", baseUrlEnv: "DEEPSEEK_BASE_URL", apiKeyEnv: "DEEPSEEK_API_KEY", reasoningTokens: 4000, jsonMode: true,
+  "magpie/antigravity/gemini-4-argon": {
+    service: "llm", model: "antigravity/gemini-4-argon",
+    baseUrlEnv: "LLM_BASE_URL", apiKeyEnv: "LLM_API_KEY",
+    reasoningTokens: 4096, jsonMode: true, vision: false,
   },
-  "qwen3.7-flash": {
-    service: "dashscope", model: "qwen3.7-flash", baseUrlEnv: "DASHSCOPE_BASE_URL", apiKeyEnv: "DASHSCOPE_API_KEY",
-    extra: { enable_thinking: false }, jsonMode: true,
+  "magpie/antigravity/gemini-3.8-flash": {
+    service: "llm", model: "antigravity/gemini-3.8-flash",
+    baseUrlEnv: "LLM_BASE_URL", apiKeyEnv: "LLM_API_KEY",
+    reasoningTokens: 4096, jsonMode: true, vision: false,
   },
-  "qwen3.8-flash": {
-    service: "dashscope", model: "qwen3.8-flash", baseUrlEnv: "DASHSCOPE_BASE_URL", apiKeyEnv: "DASHSCOPE_API_KEY",
-    extra: { enable_thinking: false }, jsonMode: true,
+  "magpie/antigravity/claude-opus-5-5": {
+    service: "llm", model: "antigravity/claude-opus-5-5",
+    baseUrlEnv: "LLM_BASE_URL", apiKeyEnv: "LLM_API_KEY",
+    reasoningTokens: 4096, jsonMode: true, vision: false,
   },
-  "mimo-v2.6-flash": {
-    service: "mimo", model: "mimo-v2.6-flash", baseUrlEnv: "XIAOMI_MIMO_BASE_URL", apiKeyEnv: "XIAOMI_MIMO_API_KEY",
-    extra: { thinking: { type: "disabled" } }, jsonMode: true,
-  },
-  "qwen3-vl-flash": {
-    service: "dashscope", model: "qwen3-vl-flash", baseUrlEnv: "DASHSCOPE_BASE_URL", apiKeyEnv: "DASHSCOPE_API_KEY",
-    extra: { enable_thinking: false }, jsonMode: false, vision: true,
+  "magpie/antigravity/claude-sonnet-5-5": {
+    service: "llm", model: "antigravity/claude-sonnet-5-5",
+    baseUrlEnv: "LLM_BASE_URL", apiKeyEnv: "LLM_API_KEY",
+    reasoningTokens: 4096, jsonMode: true, vision: false,
   },
 };
 
-/**
- * 每一步默认用的模型（步骤见后台“模型与评测”页），值是上面的名字或 default。没写的步骤用 default。
- * 例：{ score: "glm-5.3-flash-selection", groupReview: "mimo-v2.6-flash" }
- */
+/** 未经后台或环境覆盖的步骤使用 .env 指定的本机 Magpie Gemini。 */
 export const DEFAULTS: Record<string, string> = {};

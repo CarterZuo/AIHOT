@@ -9,6 +9,7 @@ import { proxiedImage, proxiedImageSet } from "../media/imgproxy.ts";
 import { publicSourceName } from "./rules.ts";
 import { evidenceCondition, listedCondition } from "./scope.ts";
 import { storyTexts } from "./story-text.ts";
+import { publicStoryTitle } from "./story-title.ts";
 
 // Concurrent reads are shared, nothing more: public words follow withdrawals and regrouping at once.
 const ranking = shared<void, HotRanking | null>(() => "latest", queryLatestHotRanking);
@@ -29,7 +30,7 @@ async function queryLatestHotRanking(): Promise<HotRanking | null> {
   const now = new Date();
   const entries = row.entries;
   const current = entries.length ? await sql<{ story_id: number; article_id: string; story_title: string; url: string; source_name: string; latest_at: Date }[]>`
-    SELECT DISTINCT ON (f.story_id, p.article_id) f.story_id, p.article_id, st.title AS story_title, p.url, s.name AS source_name,
+    SELECT DISTINCT ON (f.story_id, p.article_id) f.story_id, p.article_id, ${publicStoryTitle(sql`st.id`, sql`st.title`, now)} AS story_title, p.url, s.name AS source_name,
       latest.at AS latest_at
     FROM facts f JOIN stories st ON st.id = f.story_id JOIN fact_articles fa ON fa.fact_id = f.id JOIN publications p ON p.article_id = fa.article_id
     JOIN sources s ON s.id = p.source_id

@@ -61,6 +61,11 @@ function article(title: string, text: string) {
 }
 const languages: Array<{ path: string; language: string | undefined }> = [];
 const server = http.createServer((req, res) => {
+  if (req.url === "/negotiated-list") {
+    const html = '<html><body><table><tr><td class="title"><a href="/post/42">Public article title</a></td><td>2026-10-23</td></tr></table></body></html>';
+    res.setHeader("content-type", "text/html; charset=utf-8");
+    res.end(req.headers.accept?.includes("application/json") ? JSON.stringify(html) : html); return;
+  }
   const path = req.url ?? "";
   languages.push({ path, language: req.headers["accept-language"] });
   if (path === "/en/post" && /^zh/.test(req.headers["accept-language"] ?? "")) {
@@ -281,4 +286,12 @@ test("a source's language is an Accept-Language value, refused by kinds that rea
     }
   }
   for (const kind of ["x_search", "mp_account", "external"] as const) assert.deepEqual(unsupportedConfig(kind, { acceptLanguage: "en" }), ["acceptLanguage"], kind);
+});
+
+test("HTML listing negotiation does not invite a JSON string in place of a page", async () => {
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/negotiated-list`;
+  const out = await fetchWebList(source({ url, itemSelector: "tr", linkSelector: "td.title a", publishedAtSelector: "td:nth-child(2)" }));
+  assert.equal(out.length, 1);
+  assert.equal(out[0].title, "Public article title");
+  assert.equal(out[0].publishedAt?.toISOString(), "2026-10-22T16:00:00.000Z");
 });

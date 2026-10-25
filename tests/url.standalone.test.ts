@@ -214,3 +214,23 @@ test("only the listing fetch of a listed host reaches a private service, directl
     await new Promise<void>(resolve => proxy.close(() => resolve()));
   }
 });
+
+// Fake-IP networks need an independent resolver, not an exception to the address guard.
+test("custom DNS checks URL and socket answers, including rebinding and mixed families", async () => {
+  let addresses = ["93.184.216.34"];
+  const resolve = async () => addresses;
+  assert.equal((await assertPublicUrl("https://public.invalid/", false, resolve)).hostname, "public.invalid");
+  const dial = (family = 0) => new Promise<{ error: NodeJS.ErrnoException | null; addresses: unknown }>(done =>
+    guardedLookup("public.invalid", { all: true, family }, (error, addresses) => done({ error, addresses }), [], resolve));
+  assert.deepEqual((await dial()).addresses, [{ address: "93.184.216.34", family: 4 }]);
+  for (const bad of [["198.18.0.50"], ["127.0.0.1"], ["93.184.216.34", "::1"], [], ["invalid"]]) {
+    addresses = bad;
+    await assert.rejects(assertPublicUrl("https://public.invalid/", false, resolve));
+    assert.equal((await dial(4)).error?.code, "EBLOCKED");
+  }
+  addresses = ["93.184.216.34", "2606:4700:4700::1111"];
+  assert.deepEqual((await dial(4)).addresses, [{ address: "93.184.216.34", family: 4 }]);
+  addresses = ["2606:4700:4700::1111"];
+  assert.equal((await dial(4)).error?.code, "ENOTFOUND");
+  await assert.rejects(assertPublicUrl("http://metadata.google.internal/", false, resolve), /Blocked host/);
+});

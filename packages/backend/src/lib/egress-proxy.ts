@@ -2,7 +2,7 @@
 // can spend 20 s on a blocked name and occupy the lookup pool for unrelated images. Letting the proxy
 // resolve an unchecked name instead would allow DNS rebinding into this host or its private network.
 import net from "node:net";
-import { Client, ProxyAgent, request, type Agent, type Dispatcher } from "undici";
+import { Agent, Client, ProxyAgent, request, type Dispatcher } from "undici";
 import { isBlockedAddress } from "./url.ts";
 
 // HTTP/2 idle-socket cleanup can emit an unhandled stream error after a request has finished.
@@ -49,6 +49,20 @@ export function createEgressProxy(proxyUrl: string, resolve: Resolve, factory?: 
 /** The fixed DNS service is reached through the same outbound proxy, never the system resolver. */
 export function createEgressResolver(proxyUrl: string): Resolve {
   const dns = new ProxyAgent({ uri: proxyUrl, ...OUTBOUND_HTTP_OPTIONS, proxyTls: OUTBOUND_HTTP_OPTIONS, maxResponseSize: 64 * 1024 });
+  return createJsonResolver("https://cloudflare-dns.com/dns-query", dns);
+}
+
+/** A literal public HTTPS endpoint avoids the local fake-IP resolver without trusting its answers. */
+export function createDirectResolver(endpoint: string): Resolve {
+  const url = new URL(endpoint);
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  if (url.protocol !== "https:" || !net.isIP(host) || isBlockedAddress(host) || url.username || url.password || url.hash) {
+    throw new Error("OUTBOUND_DNS_URL must be a public IP HTTPS endpoint without credentials or fragment");
+  }
+  return createJsonResolver(url.href, new Agent({ ...OUTBOUND_HTTP_OPTIONS, maxResponseSize: 64 * 1024 }));
+}
+
+function createJsonResolver(endpoint: string, dns: Dispatcher): Resolve {
   const cache = new Map<string, { addresses: string[]; until: number }>();
   const pending = new Map<string, Promise<string[]>>();
   return (host) => {
@@ -59,7 +73,7 @@ export function createEgressResolver(proxyUrl: string): Resolve {
       work = (async () => {
         const signal = AbortSignal.timeout(5_000);
         const records = (await Promise.all(["A", "AAAA"].map(async (type) => {
-          const url = new URL("https://cloudflare-dns.com/dns-query");
+          const url = new URL(endpoint);
           url.search = new URLSearchParams({ name: host, type }).toString();
           const res = await request(url, { dispatcher: dns, signal, headers: { accept: "application/dns-json" } });
           if (res.statusCode !== 200) { await res.body.dump(); throw new Error(`DNS upstream ${res.statusCode}`); }

@@ -17,6 +17,7 @@ import { sweepUngrouped } from "@aihot/backend/jobs/events";
 import { enqueue, getBoss, QUEUES, stopBoss } from "@aihot/backend/jobs/queue";
 import { recoverStaleWork, releaseReceipt } from "@aihot/backend/operations/recover";
 import { publishArticle } from "@aihot/backend/publication/publish";
+import { copyHash, FACT_REVIEW_VERSION } from "@aihot/backend/editorial/fact-review";
 
 const T = tag();
 const sourceId = `group-reliability-${T}`;
@@ -27,7 +28,7 @@ const provider = await stub((_hit, request) => {
   const text = body.messages[1].content as string;
   if (text.includes("【报道 A】")) return { choices: [{ message: { content: JSON.stringify({ a: "发布", b: "发布", relation: "SAME_OCCURRENCE", difference: "", confidence: 1 }) } }] };
   const ids = [...text.matchAll(/【候选 (C\d+)】/g)].map(m => m[1]);
-  return { choices: [{ message: { content: JSON.stringify({ query: "新模型发布", decisions: (response === "missing" ? [] : ids).map(id => ({ id, relation: "SAME_OCCURRENCE", confidence: 1, note: "" })), selection: { addsValue: true, reason: "fixture news" } }) } }] };
+  return { choices: [{ message: { content: JSON.stringify({ query: "新车型发布", decisions: (response === "missing" ? [] : ids).map(id => ({ id, relation: "SAME_OCCURRENCE", confidence: 1, note: "" })), selection: { addsValue: true, reason: "fixture news" } }) } }] };
 });
 pointModels(provider.url, ["deepseek-flash", "mimo-v2.6-flash", "glm-5.3-flash"]);
 MODELS["test-group-primary"] = { ...MODELS["deepseek-flash"]!, key: "test-group-primary" };
@@ -38,9 +39,9 @@ const embeddings = await embeddingsStub();
 let factId: number;
 
 async function report(suffix: string, composite = false) {
-  const { articleId } = await upsertMaterial({ sourceId, url: `https://example.org/group-${T}/${suffix}`, title: `新模型发布${T}`, bodyText: "今日发布新模型和价格。", bodyStatus: "ok", via: "fetch", publishedAt: new Date() });
+  const { articleId } = await upsertMaterial({ sourceId, url: `https://example.org/group-${T}/${suffix}`, title: `新车型发布${T}`, bodyText: "今日发布新模型和价格。", bodyStatus: "ok", via: "fetch", publishedAt: new Date() });
   await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,category,title_zh,summary_zh,score,selected,output)
-    VALUES (${articleId},1,'rule','pass','ai-models',${`新模型发布${T} ${suffix}`},${`新模型发布和价格${T} ${suffix}`},80,true,${sql.json({ scope: composite ? "composite" : "single", fact: { title: "新模型发布", subject: "实验室", action: "发布", object: "模型" } })})`;
+    VALUES (${articleId},1,'rule','pass','products',${`新车型发布${T} ${suffix}`},${`新车型发布和价格${T} ${suffix}`},80,true,${sql.json({ scope: composite ? "composite" : "single", fact: { title: "新车型发布", subject: "实验室", action: "发布", object: "模型" } })})`;
   await sql`UPDATE articles SET processing_state='analyzed' WHERE id=${articleId}`;
   await publishArticle(articleId);
   return articleId;
@@ -48,7 +49,7 @@ async function report(suffix: string, composite = false) {
 
 /** A discussion post as collection leaves it: recorded, then handed to grouping. */
 async function post(suffix: string, history = false) {
-  const { articleId } = await upsertMaterial({ sourceId: signalSource, url: `https://example.org/group-${T}/${suffix}`, title: `讨论新模型发布${T} ${suffix}`, via: "fetch",
+  const { articleId } = await upsertMaterial({ sourceId: signalSource, url: `https://example.org/group-${T}/${suffix}`, title: `讨论新车型发布${T} ${suffix}`, via: "fetch",
     publishedAt: history ? new Date(Date.now() - 30 * 86400_000) : new Date(), backfill: history ? "test history" : null });
   await settleNonEditorial(articleId);
   return articleId;
@@ -58,13 +59,37 @@ before(async () => {
   await sql`INSERT INTO sources (id,name,kind,tier,participation_mode,next_fetch_at) VALUES (${sourceId},'Group reliability','rss','T1','editorial','2100-01-01'),
     (${signalSource},'Group reliability signal','rss','T2','hot_signal','2100-01-01')`;
   const id = await report("root");
-  const [story] = await sql`INSERT INTO stories (public_id,title) VALUES (${randomUUID()},'新模型发布') RETURNING id`;
-  const [fact] = await sql`INSERT INTO facts (public_id,story_id,title) VALUES (${`f-${T}`},${story!.id},'新模型发布') RETURNING id`;
+  const [story] = await sql`INSERT INTO stories (public_id,title) VALUES (${randomUUID()},'新车型发布') RETURNING id`;
+  const [fact] = await sql`INSERT INTO facts (public_id,story_id,title) VALUES (${`f-${T}`},${story!.id},'新车型发布') RETURNING id`;
   factId = Number(fact!.id);
   await sql`INSERT INTO fact_articles (fact_id,article_id,role) VALUES (${factId},${id},'primary')`;
   await groupArticle(id);
 });
 after(async () => { await provider.close(); await embeddings.close(); await stopBoss(); await closeDb(); });
+
+test("queued and manual grouping cannot bypass a factual hold or discard its historical membership", async () => {
+  for (const status of ["reject", "uncertain", "missing", "wrong-copy", "withdrawn"] as const) {
+    const id = await report(`factual-hold-${status}`);
+    const [an] = await sql`SELECT title_zh,summary_zh,reason_zh FROM analyses WHERE article_id=${id}`;
+    const draftHash = copyHash({ titleZh: an!.title_zh, summaryZh: an!.summary_zh, reasonZh: an!.reason_zh });
+    const output = { factReviewRequired: true, ...(status === "missing" ? {} : { factReview: {
+      version: FACT_REVIEW_VERSION, status: status === "wrong-copy" || status === "withdrawn" ? "pass" : status,
+      copyHash: status === "wrong-copy" ? "not-the-current-copy" : draftHash,
+    } }) };
+    await sql`UPDATE analyses SET output=${sql.json(output)} WHERE article_id=${id}`;
+    await sql`INSERT INTO fact_articles(fact_id,article_id,role,manual) VALUES(${factId},${id},'report',true)`;
+    if (status === "withdrawn") {
+      await sql`INSERT INTO editorial_overrides(article_id,visibility,reason,updated_by) VALUES(${id},'withdrawn','test hold','test')`;
+      await publishArticle(id);
+    }
+    const before = provider.hits();
+    assert.equal((await groupArticle(id)).verdict, "quality-held", status);
+    assert.equal(provider.hits(), before, "a held draft must not buy an identity judgement");
+    assert.equal((await sql`SELECT 1 FROM fact_articles WHERE article_id=${id} AND manual`).length, 1,
+      "the audit history's membership is retained");
+    assert.equal((await sql`SELECT visibility FROM publications WHERE article_id=${id}`)[0]!.visibility, "withdrawn");
+  }
+});
 
 test("missing and invalid identity answers cannot silently assert unrelated", () => {
   assert.equal(BatchSchema.safeParse({}).success, false);
@@ -317,6 +342,29 @@ for (const lateFailure of [false, true]) test(`an old grouping ${lateFailure ? "
   assert.equal((await sql`SELECT 1 FROM fact_articles WHERE article_id=${id}`).length, 0);
 });
 
+
+test("a factual hold arriving during grouping prevents the old paid judgement from committing", async () => {
+  const id = await report("held-in-flight");
+  const asked = gate();
+  const release = gate();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    if (String(input).startsWith(provider.url)) { asked.open(); await release.promise; }
+    return originalFetch(input, init);
+  };
+  const grouping = groupArticle(id);
+  const rejected = assert.rejects(grouping, /withdrawn/);
+  try {
+    await asked.promise;
+    await sql`UPDATE analyses SET output=output || ${sql.json({ factReviewRequired: true, factReview: { status: "reject" } })} WHERE article_id=${id}`;
+    await publishArticle(id);
+    release.open();
+    await rejected;
+  } finally { release.open(); globalThis.fetch = originalFetch; }
+  assert.equal((await sql`SELECT 1 FROM fact_articles WHERE article_id=${id}`).length, 0);
+  assert.equal((await sql`SELECT 1 FROM grouping_decisions WHERE article_id=${id}`).length, 0);
+  assert.equal((await sql`SELECT visibility FROM publications WHERE article_id=${id}`)[0]!.visibility, "withdrawn");
+});
 
 // Failure mode: a pending decision is recorded but an old public projection still exposes it as selected.
 for (const change of ["revision", "regroup"] as const) test(`${change} withdraws the old selected projection in the same transaction`, async () => {

@@ -30,7 +30,7 @@ async function run(args: string[], providerUrl: string) {
   const env: NodeJS.ProcessEnv = { ...process.env, MODEL_CALLS_ENABLED: "true" };
   pointModels(providerUrl, ["deepseek-flash"], env);
   try {
-    const { stdout, stderr } = await exec(process.execPath, ["scripts/eval-story-digests.ts", ...args], { cwd: REPO_ROOT, env, timeout: 30_000 });
+    const { stdout, stderr } = await exec(process.execPath, ["--import", "./tests/setup.ts", "scripts/eval-story-digests.ts", ...args], { cwd: REPO_ROOT, env, timeout: 30_000 });
     return { code: 0, stdout, stderr };
   } catch (error) {
     const failed = error as { code?: number; stdout?: string; stderr?: string };

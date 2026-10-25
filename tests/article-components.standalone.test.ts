@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as cheerio from "cheerio";
-import { readable } from "@aihot/backend/content/extract";
+import { pageRules, readable } from "@aihot/backend/content/extract";
 import { unsupportedConfig } from "@aihot/backend/sources/config-keys";
 import { bodyToMarkdown } from "@aihot/backend/content/markdown";
 import { shield, unshield } from "@aihot/backend/editorial/translate";
@@ -53,6 +53,44 @@ test("comparison panels keep metric headings, model/value relationships and the 
   assert.doesNotMatch(body.html, /DECORATION|AXIS/);
   assert.match(bodyToMarkdown(body.html), /\| Model 1 \| \$109.06 \| 142 \|/);
   assert.equal(cheerio.load(extract('<dl><dt>Term</dt><dd>Ordinary definition</dd></dl>').html)("dl").length, 1);
+});
+
+test("a declared body keeps attachment-heavy articles and excludes surrounding declarations", () => {
+  const attachments = Array.from({ length: 11 }, (_, i) => `<p><a href="/files/${i}.pdf">${i + 1}. Draft standard and explanatory attachment</a></p>`).join("");
+  const html = `<html><head><title>Draft standards</title><meta name="pubdate" content="2026-10-21T06:53:25Z"></head><body>
+    <div class="report-body"><p>${prose}</p><p>Comments close on 2026-12-19.</p>${attachments}<img data-src="/chart.png" alt="Chart"><script>untrusted()</script><a href="javascript:alert(1)">Unsafe link</a>
+    <p hidden>HIDDEN WORDS</p><p aria-hidden="true">ARIA HIDDEN</p><p style="DISPLAY:NONE !important">STYLE HIDDEN</p></div>
+    <div><p>${"COPYRIGHT DECLARATION. Reproduction requests and legal contacts. ".repeat(12)}</p></div></body></html>`;
+  const rules = pageRules({ detail: { bodySelector: ".report-body" } });
+  const body = readable(html, "https://publisher.example/news/item", rules);
+  assert.ok(body);
+  assert.match(body.text, /Comments close on 2026-12-19/);
+  assert.doesNotMatch(body.html, /COPYRIGHT DECLARATION|HIDDEN WORDS|ARIA HIDDEN|STYLE HIDDEN|untrusted|javascript:/);
+  const $ = cheerio.load(body.html);
+  assert.equal($("a[href$='.pdf']").length, 11);
+  assert.equal($("a[href$='.pdf']").first().attr("href"), "https://publisher.example/files/0.pdf");
+  assert.equal($("img").attr("src"), "https://publisher.example/chart.png");
+  assert.equal(body.publishedAt?.toISOString(), "2026-10-21T06:53:25.000Z");
+  assert.equal(body.via, "selector");
+});
+
+test("a declared body fails closed when missing, ambiguous, hidden, malformed or too short", () => {
+  const url = "https://publisher.example/article";
+  for (const content of ["", `<div class="report-body">Short</div>`, `<div class="report-body">${prose}</div><div class="report-body">${prose}</div>`,
+    ...["hidden", 'aria-hidden="true"', 'style="visibility:HIDDEN"'].map(attr => `<section ${attr}><div class="report-body">${prose}</div></section>`)]) {
+    assert.equal(readable(page(content), url, { bodySelector: ".report-body" }), null);
+  }
+  assert.equal(readable(page(prose), url, { bodySelector: "???" }), null);
+  assert.ok(readable(page(prose), url), "sources without a declared body keep the generic extractor");
+});
+
+test("sources accept a nonempty declared body selector and reject malformed values", () => {
+  for (const kind of ["rss", "web_list", "json_list"] as const) {
+    assert.deepEqual(unsupportedConfig(kind, { detail: { bodySelector: ".report-body" } }), []);
+    for (const bodySelector of ["", " ", false, null, [".report-body"]]) {
+      assert.deepEqual(unsupportedConfig(kind, { detail: { bodySelector } }), ["detail.bodySelector"]);
+    }
+  }
 });
 
 test("a source declares only widget rules extraction can run", () => {

@@ -70,6 +70,21 @@ for (const x of [false, true]) for (const empty of [false, true]) {
   });
 }
 
+test("a rejected declared body removes stale extracted text before later processing", async () => {
+  reset(); hold.release.open();
+  const source = `${sourceId}-declared`;
+  await sql`INSERT INTO sources(id,name,kind,config) VALUES (${source},'Declared body','web_list',${sql.json({ detail: { bodySelector: ".verified-body" } })})`;
+  const { articleId } = await upsertMaterial({ sourceId: source, url: `${base}/${tag()}`, title: "Original", via: "fetch", bodyStatus: "ok", bodyText: body, bodyHtml: `<p>${body}</p>` });
+  presentationHtml = `<div class="verified-body">Only a short video introduction.</div><p>${body}</p>`;
+  await rerun(articleId, "extract", `declared-body-${tag()}`, "test");
+  assert.equal(await extractArticleBody(articleId), "unconfirmed");
+  const [stored] = await sql`SELECT body_text,body_html,body_status,revision FROM articles WHERE id=${articleId}`;
+  assert.equal(stored!.body_text, null);
+  assert.equal(stored!.body_html, null);
+  assert.equal(stored!.body_status, "unconfirmed");
+  assert.equal(stored!.revision, 2);
+});
+
 test("overlapping page extractions and an unchanged admin retry create only one body revision", async () => {
   reset(2);
   const { articleId } = await upsertMaterial({ sourceId, url: `${base}/${tag()}`, title: "Original", via: "fetch" });

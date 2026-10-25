@@ -21,7 +21,7 @@ export interface ExtractedBody {
   html: string;
   text: string;
   images: Array<{ kind: "image"; url: string; width: number | null; height: number | null }>;
-  via: "readability" | "jina";
+  via: "readability" | "selector" | "jina";
   /** The page's publication metadata; neither modification time nor dates mentioned in its prose. */
   publishedAt?: Date | null;
   publicationTime?: string | null;
@@ -148,10 +148,12 @@ export interface PageRules {
   utcOffset?: string;
   preserve?: PreserveRule[];
   acceptLanguage?: string;
+  /** One authoritative, visible body region; a missing or ambiguous match stays unconfirmed. */
+  bodySelector?: string;
 }
 
 export const pageRules = (config: SourceRow["config"]): PageRules =>
-  ({ utcOffset: articleUtcOffset(config), preserve: config.detail?.preserve, acceptLanguage: config.acceptLanguage });
+  ({ utcOffset: articleUtcOffset(config), preserve: config.detail?.preserve, acceptLanguage: config.acceptLanguage, bodySelector: config.detail?.bodySelector });
 
 type Doc = ReturnType<typeof parseHTML>["document"];
 type El = NonNullable<ReturnType<Doc["querySelector"]>>;
@@ -397,7 +399,25 @@ export function readableDocument(document: Doc, url: string, rules: PageRules = 
   settleInlineVisibility(document);
   preserveWidgets(document, rules.preserve ?? []);
   describeFigureDrawings(document);
-  const article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0], { charThreshold: MIN_BODY_CHARS, keepClasses: false }).parse();
+  let article: { content?: string | null; title?: string | null } | null;
+  if (rules.bodySelector) {
+    let matches: El[];
+    try { matches = [...document.querySelectorAll(rules.bodySelector)]; }
+    catch { return null; }
+    if (matches.length !== 1) return null;
+    const body = matches[0]!;
+    for (let node: El | null = body; node; node = node.parentElement) {
+      if (node.hasAttribute("hidden") || node.getAttribute("aria-hidden") === "true"
+        || /(?:^|;)(?:display:none|visibility:hidden)(?:;|$)/.test(node.getAttribute("style") ?? "")) return null;
+    }
+    for (const node of body.querySelectorAll('[hidden], [aria-hidden="true"], [style]')) {
+      if (node.getAttribute("aria-hidden") === "true" || hiddenIn(node, body)) node.remove();
+    }
+    // A source-declared body may be mostly attachment links. Density pruning must not discard it.
+    article = { content: body.innerHTML, title: document.title };
+  } else {
+    article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0], { charThreshold: MIN_BODY_CHARS, keepClasses: false }).parse();
+  }
   if (!article?.content) return null;
   const clean = trimTrailingChrome(sanitizeBody(article.content, url));
   const text = stripTags(clean);
@@ -414,7 +434,7 @@ export function readableDocument(document: Doc, url: string, rules: PageRules = 
     images.push({ kind: "image", url: m[1]!.replace(/&amp;/g, "&"), width: w ? Number(w[1]) : null, height: h ? Number(h[1]) : null });
     if (images.length >= 12) break;
   }
-  return { html: clean, text, images, via: "readability", ...date };
+  return { html: clean, text, images, via: rules.bodySelector ? "selector" : "readability", ...date };
 }
 
 export async function extractFromUrl(url: string, subject: string, rules: PageRules = {}, opts: { paidFallback?: boolean } = {}): Promise<ExtractedBody | null> {
@@ -431,7 +451,8 @@ export async function extractFromUrl(url: string, subject: string, rules: PageRu
   } catch {
     // fall through to Jina
   }
-  if (opts.paidFallback === false) return null;
+  // A Markdown reader cannot enforce a CSS body boundary; do not bypass a declared region.
+  if (rules.bodySelector || opts.paidFallback === false) return null;
   try {
     const page = await jinaRead(url, { purpose: "body_fallback", subject });
     const html = markdownBody(page.markdown, url);
@@ -464,7 +485,7 @@ export async function extractArticleBody(articleId: string): Promise<"ok" | "unc
   if (a.x_post?.tweetId) return extractXArticle(a.id, a.x_post.tweetId, a.revision);
   const got = await extractFromUrl(a.url, `article:${a.id}`, pageRules(a.config));
   if (!got) {
-    return markUnconfirmed(articleId, a.revision);
+    return markUnconfirmed(articleId, a.revision, !!a.config.detail?.bodySelector);
   }
   // The body is new content: a new revision, so an analysis of the body-less input counts as stale.
   return sql.begin(async (tx) => {
@@ -488,10 +509,23 @@ export async function extractArticleBody(articleId: string): Promise<"ok" | "unc
   });
 }
 
-async function markUnconfirmed(articleId: string, revision: number): Promise<"unconfirmed" | "skipped"> {
-  const rows = await sql`UPDATE articles SET body_status = 'unconfirmed', updated_at = now()
-    WHERE id = ${articleId} AND revision = ${revision} AND body_status <> 'ok' RETURNING id`;
-  return rows.length ? "unconfirmed" : "skipped";
+async function markUnconfirmed(articleId: string, revision: number, discardBody = false): Promise<"unconfirmed" | "skipped"> {
+  return sql.begin(async (tx) => {
+    const [row] = await tx<{ title: string; excerpt: string | null; body_html: string | null; body_text: string | null }[]>`
+      SELECT title, excerpt, body_html, body_text FROM articles
+      WHERE id = ${articleId} AND revision = ${revision} AND body_status <> 'ok' FOR UPDATE`;
+    if (!row) return "skipped";
+    if (discardBody && (row.body_html || row.body_text)) {
+      // The declared region rejected this prior body. Retaining it would feed known-wrong text to analysis.
+      await reviseMaterial(tx, articleId, {
+        set: sql`body_html = NULL, body_text = NULL, body_status = 'unconfirmed'`,
+        hash: contentHash({ title: row.title, bodyText: null, excerpt: row.excerpt }), title: row.title, bodyText: null,
+      });
+    } else {
+      await tx`UPDATE articles SET body_status = 'unconfirmed', updated_at = now() WHERE id = ${articleId}`;
+    }
+    return "unconfirmed";
+  });
 }
 
 /**

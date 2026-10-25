@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import net from "node:net";
 import { after, test } from "node:test";
 import { createRequire } from "node:module";
-import { createEgressProxy } from "@aihot/backend/lib/egress-proxy";
+import { createDirectResolver, createEgressProxy } from "@aihot/backend/lib/egress-proxy";
 
 // The MCP client has its own undici version; exercise the backend's actual HTTP implementation.
 const { fetch } = createRequire(new URL("../packages/backend/package.json", import.meta.url))("undici");
@@ -48,5 +48,11 @@ test("internal, mixed, reserved, empty and malformed DNS answers never reach the
       await assert.rejects(fetch("http://image.invalid/photo", { dispatcher: agent }));
       assert.equal(tunnels.length, before);
     } finally { await agent.close(); }
+  }
+});
+
+test("direct DNS bootstrap cannot use local DNS, cleartext or private/reserved endpoints", () => {
+  for (const url of ["http://223.5.5.5/resolve", "https://dns.example/resolve", "https://127.0.0.1/resolve", "https://198.18.0.1/resolve", "https://[::1]/resolve", "https://u:p@223.5.5.5/resolve"]) {
+    assert.throws(() => createDirectResolver(url), /public IP HTTPS/);
   }
 });

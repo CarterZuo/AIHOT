@@ -1,6 +1,7 @@
 // The config keys each kind of source implements. Anything else is refused: a key a collector does not
 // know would otherwise fall back silently to the generic parse (menus and sentence fragments as
 // articles, dates never found).
+import { serverModules } from "../modules.ts";
 import type { SourceRow } from "./types.ts";
 
 // Rules applied in collect.ts to every kind read through collectSource.
@@ -14,7 +15,7 @@ const KEYS: Record<SourceRow["kind"], string[]> = {
     "itemSelector", "linkSelector", "titleSelector", "publishedAtSelector", "publishedAtRegex", "publishedAtUtcOffset",
   ],
   json_list: [
-    ...COLLECTED, "url", "mode", "method", "headers", "bodyJson", "jsonKey", "windowVar", "itemsPath", "itemsObjectValues",
+    ...COLLECTED, "adapter", "url", "mode", "method", "headers", "bodyJson", "jsonKey", "windowVar", "itemsPath", "itemsObjectValues",
     "titlePaths", "summaryPaths", "summaryIsBody", "authorPaths", "publishedAtPath", "publishedAtUnit", "publishedAtUtcOffset", "externalIdPath",
     "urlTemplate", "urlTemplateFallback", "rawDropKeys", "requireBoolean", "minNumeric",
   ],
@@ -33,7 +34,7 @@ const NESTED: Record<string, string[]> = {
   minNumeric: ["path", "min"],
   detail: [
     "maxFetches", "publishedAtSelector", "publishedAtRegex", "publishedAtUtcOffset", "publishedAtAuthoritative", "upgradeDatePrecision",
-    "titleSelector", "titleRegex", "titleAuthoritative", "summarySelector", "preserve",
+    "titleSelector", "titleRegex", "titleAuthoritative", "summarySelector", "bodySelector", "preserve",
   ],
 };
 
@@ -75,10 +76,12 @@ export function unsupportedConfig(kind: SourceRow["kind"], config: Record<string
       if (typeof v !== "string") return false;
       try { const u = new URL(v); return /^https?:$/.test(u.protocol) && !u.username && !u.password && !u.search && !u.hash; } catch { return false; }
     }))) out.push(key);
-    else if (VALUES[key] && !VALUES[key]!.includes(String(value))) out.push(`${key}=${String(value)}`);
+    else if (VALUES[key] && !VALUES[key]!.includes(String(value))
+      && !(key === "adapter" && serverModules().some(m => m.sourceAdapters?.[String(value)]?.kind === kind))) out.push(`${key}=${String(value)}`);
     else if (NESTED[key] && value && typeof value === "object") {
       for (const sub of Object.keys(value)) if (!NESTED[key]!.includes(sub)) out.push(`${key}.${sub}`);
       if (key === "detail" && "preserve" in value && !preserveRules((value as { preserve: unknown }).preserve)) out.push("detail.preserve");
+      if (key === "detail" && "bodySelector" in value && (typeof value.bodySelector !== "string" || !value.bodySelector.trim())) out.push("detail.bodySelector");
     }
   }
   return out;

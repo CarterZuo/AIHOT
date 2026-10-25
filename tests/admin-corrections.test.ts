@@ -6,11 +6,14 @@ import { after, test } from "node:test";
 import { sql, closeDb } from "@aihot/backend/db";
 import { createSource, updateSource } from "@aihot/backend/admin/sources";
 import { overrideFields, rerun, setSeoIndexed, setVisibility } from "@aihot/backend/admin/content";
+import { adoptReportSummary } from "@aihot/backend/admin/reports";
+import { copyHash, FACT_REVIEW_VERSION } from "@aihot/backend/editorial/fact-review";
 import { upsertMaterial } from "@aihot/backend/content/materials";
 import { publishArticle } from "@aihot/backend/publication/publish";
 import { getBoss, stopBoss } from "@aihot/backend/jobs/queue";
 import { sha256 } from "@aihot/backend/lib/ids";
 import { buildApp } from "../apps/api/src/app.ts";
+import { SOURCE_DEFAULTS } from "@aihot/site";
 
 const T = tag();
 const sourceId = `admin-${T}`;
@@ -21,6 +24,19 @@ after(async () => { await app.close(); await stopBoss(); await closeDb(); });
 async function article() {
   return (await upsertMaterial({ sourceId, url: `https://example.com/${tag()}`, title: "审查材料", bodyText: "正文", bodyStatus: "ok", via: "fetch", publishedAt: new Date() })).articleId;
 }
+
+test("source creation follows site fulltext defaults and preserves explicit overrides", async () => {
+  for (const explicit of [undefined, !SOURCE_DEFAULTS.siteFulltext]) {
+    const id = `fulltext-default-${tag()}`;
+    const result = await createSource({
+      id, name: "Fulltext default", kind: "external", config: {},
+      ...(explicit === undefined ? {} : { site_fulltext: explicit }),
+    }, "test");
+    assert.ok(result.created);
+    assert.equal(result.source.site_fulltext, explicit ?? SOURCE_DEFAULTS.siteFulltext);
+    assert.equal(result.source.syndicate_fulltext, false);
+  }
+});
 
 test("concurrent source intake creates one source for the same feed", async () => {
   const blocker = await sql.reserve();
@@ -138,6 +154,112 @@ test("a rejected SEO correction leaves both the decision and public indexing unc
   assert.equal(excluded!.indexable, false);
 });
 
+async function frozenDaily() {
+  const id = await article();
+  const copy = { titleZh: "原生标题", summaryZh: "配备双腔空气悬架，全系标配后轮转向。", reasonZh: "区分配置适用范围。" };
+  const output = { factReviewRequired: true, factReview: { version: FACT_REVIEW_VERSION, status: "pass", copyHash: copyHash(copy),
+    evidence: [{ field: "summaryZh", quote: "全系标配后轮转向" }], issues: [] } };
+  const [analysis] = await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,title_zh,summary_zh,reason_zh,output,selected)
+    VALUES (${id},1,'model','pass',${copy.titleZh},${copy.summaryZh},${copy.reasonZh},${sql.json(output)},false) RETURNING id`;
+  await publishArticle(id);
+  const summary = "全系标配后轮转向与双腔空气悬架。";
+  const content = { date: "2096-01-02", leadItemId: "another-item", lead: { title: "保留头条", leadParagraph: "保留导读" },
+    highlights: [id], flashes: [], sections: [{ label: "产品动态", items: [{ itemId: id, title: "冻结标题", summary, sourceId,
+      sourceName: "Admin review", sourceUrl: "https://example.com", firstParty: true, role: "官方" }, { itemId: "other", summary: "保留其他条目" }] }],
+    metrics: { totalEvents: 2, modelsReleased: 0 }, generator: { version: "fixture" } };
+  const [report] = await sql`INSERT INTO reports (kind,key,window_start,window_end,content,generated_at,model,origin)
+    VALUES ('daily',${`correction-${tag()}`},'2096-01-01','2096-01-02',${sql.json(content)},'2096-01-02T00:00:00Z','frozen-model','imported') RETURNING *`;
+  const command = { itemId: id, expectedRevision: 1, expectedOldSummary: summary, analysisId: Number(analysis!.id), reason: "采用原生审核通过摘要" };
+  return { id, copy, output, report: report!, content, command };
+}
+
+test("frozen daily correction adopts reviewed native copy, preserves the issue, and refuses stale retries", async () => {
+  const fixture = await frozenDaily();
+  const result = await adoptReportSummary(Number(fixture.report.id), fixture.command, "test-report-summary");
+  assert.equal(result.revision, 2);
+  assert.equal(result.summary, fixture.copy.summaryZh);
+  const [saved] = await sql`SELECT * FROM reports WHERE id=${fixture.report.id}`;
+  const expected = structuredClone(fixture.content);
+  expected.sections[0]!.items[0]!.summary = fixture.copy.summaryZh;
+  assert.deepEqual(saved!.content, expected);
+  for (const field of ["kind", "key", "window_start", "window_end", "generated_at", "model", "origin", "created_at"]) {
+    assert.deepEqual(saved![field], fixture.report[field], field);
+  }
+  const [revision] = await sql`SELECT * FROM report_revisions WHERE report_id=${fixture.report.id}`;
+  assert.equal(revision!.revision, 1);
+  assert.deepEqual(revision!.content, fixture.content);
+  assert.deepEqual(revision!.generated_at, fixture.report.generated_at);
+  const [audit] = await sql`SELECT * FROM audit_log WHERE subject=${`report:${fixture.report.id}`}`;
+  assert.equal(audit!.action, "report.correct-summary");
+  assert.equal(audit!.after.analysisId, fixture.command.analysisId);
+  await assert.rejects(adoptReportSummary(Number(fixture.report.id), fixture.command, "test"), { code: "conflict" });
+  assert.equal((await sql`SELECT count(*)::int AS n FROM report_revisions WHERE report_id=${fixture.report.id}`)[0]!.n, 1);
+});
+
+test("daily correction rejects unreviewed, stale, overridden and ambiguous copy without writing history", async () => {
+  const fixture = await frozenDaily();
+  const change = () => adoptReportSummary(Number(fixture.report.id), fixture.command, "test-report-invalid");
+  for (const status of ["reject", "uncertain", "absent", "mismatch"]) {
+    const output = status === "absent" ? {} : { ...fixture.output, factReview: { ...fixture.output.factReview,
+      status: status === "mismatch" ? "pass" : status, copyHash: status === "mismatch" ? "different" : fixture.output.factReview.copyHash } };
+    await sql`UPDATE analyses SET output=${sql.json(output)} WHERE id=${fixture.command.analysisId}`;
+    await assert.rejects(change(), { code: "conflict" });
+  }
+  await sql`UPDATE analyses SET output=${sql.json(fixture.output)} WHERE id=${fixture.command.analysisId}`;
+  await sql`UPDATE articles SET revision=2 WHERE id=${fixture.id}`;
+  await assert.rejects(change(), { code: "conflict" });
+  await sql`UPDATE articles SET revision=1 WHERE id=${fixture.id}`;
+  await sql`INSERT INTO editorial_overrides (article_id,fields,reason,updated_by) VALUES (${fixture.id},${sql.json({ summary: fixture.copy.summaryZh })},'人工覆盖','test')`;
+  await assert.rejects(change(), { code: "conflict" });
+  await sql`DELETE FROM editorial_overrides WHERE article_id=${fixture.id}`;
+  for (const patch of [sql`visibility='withdrawn'`, sql`summary='未采用原生稿'`, sql`analysis_id=NULL`]) {
+    await sql`UPDATE publications SET ${patch} WHERE article_id=${fixture.id}`;
+    await assert.rejects(change(), { code: "conflict" });
+    await sql`UPDATE publications SET visibility='public',summary=${fixture.copy.summaryZh},analysis_id=${fixture.command.analysisId} WHERE article_id=${fixture.id}`;
+  }
+  await assert.rejects(adoptReportSummary(Number(fixture.report.id), { ...fixture.command, expectedOldSummary: "过期文字" }, "test"), { code: "conflict" });
+  for (const content of [
+    { ...fixture.content, leadItemId: fixture.id },
+    { ...fixture.content, sections: [...fixture.content.sections, ...fixture.content.sections] },
+    { ...fixture.content, flashes: [{ itemId: fixture.id, summary: "重复" }] },
+  ]) {
+    await sql`UPDATE reports SET content=${sql.json(content as never)} WHERE id=${fixture.report.id}`;
+    await assert.rejects(change(), { code: "conflict" });
+  }
+  await sql`UPDATE reports SET content=${sql.json(fixture.content)},kind='weekly' WHERE id=${fixture.report.id}`;
+  await assert.rejects(change(), { code: "conflict" });
+  assert.equal((await sql`SELECT 1 FROM report_revisions WHERE report_id=${fixture.report.id}`).length, 0);
+  assert.equal((await sql`SELECT 1 FROM audit_log WHERE actor='test-report-invalid'`).length, 0);
+});
+
+test("concurrent daily corrections create one revision and refuse an analysis superseded before publication", async () => {
+  const fixture = await frozenDaily();
+  const results = await Promise.allSettled(["one", "two"].map(actor => adoptReportSummary(Number(fixture.report.id), fixture.command, actor)));
+  assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
+  const failed = results.find(result => result.status === "rejected");
+  assert.equal(failed?.status === "rejected" && failed.reason.code, "conflict");
+  assert.equal((await sql`SELECT count(*)::int AS n FROM report_revisions WHERE report_id=${fixture.report.id}`)[0]!.n, 1);
+  const superseded = await frozenDaily();
+  await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance) VALUES (${superseded.id},1,'model','unknown')`;
+  await assert.rejects(adoptReportSummary(Number(superseded.report.id), superseded.command, "test-superseded"), { code: "conflict" });
+});
+
+test("daily correction rolls back the report and revision if its audit cannot commit", async () => {
+  const fixture = await frozenDaily();
+  await sql.unsafe(`CREATE FUNCTION refuse_report_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN IF NEW.actor = 'test-refuse-report' THEN RAISE EXCEPTION 'report audit unavailable'; END IF; RETURN NEW; END $$`);
+  await sql.unsafe("CREATE TRIGGER refuse_report_audit BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION refuse_report_audit()");
+  try {
+    await assert.rejects(adoptReportSummary(Number(fixture.report.id), fixture.command, "test-refuse-report"), /report audit unavailable/);
+    const [saved] = await sql`SELECT content,revision FROM reports WHERE id=${fixture.report.id}`;
+    assert.equal(saved!.revision, 1);
+    assert.deepEqual(saved!.content, fixture.content);
+    assert.equal((await sql`SELECT 1 FROM report_revisions WHERE report_id=${fixture.report.id}`).length, 0);
+  } finally {
+    await sql.unsafe("DROP TRIGGER refuse_report_audit ON audit_log; DROP FUNCTION refuse_report_audit()");
+  }
+});
+
 test("bad admin input is a client error and never starts processing", async () => {
   const token = `admin-session-${T}`;
   const [user] = await sql`INSERT INTO admin_users (display_name) VALUES ('Review') RETURNING id`;
@@ -156,4 +278,13 @@ test("bad admin input is a client error and never starts processing", async () =
   assert.equal(response.statusCode, 400);
   const [state] = await sql`SELECT processing_state FROM articles WHERE id = ${id}`;
   assert.equal(state!.processing_state, "analyzed");
+  const fixture = await frozenDaily();
+  const correction = { method: "POST" as const, url: `/api/admin/reports/${fixture.report.id}/summary-correction`, payload: fixture.command };
+  assert.equal((await app.inject(correction)).statusCode, 401);
+  assert.equal((await app.inject({ ...correction, headers: { cookie: headers.cookie } })).statusCode, 403);
+  assert.equal((await app.inject({ ...correction, headers, payload: { ...fixture.command, newSummary: "任意替换稿" } })).statusCode, 400);
+  const adopted = await app.inject({ ...correction, headers });
+  assert.equal(adopted.statusCode, 200, adopted.body);
+  assert.equal(adopted.json().summary, fixture.copy.summaryZh);
+  assert.equal((await app.inject({ ...correction, headers })).statusCode, 409);
 });

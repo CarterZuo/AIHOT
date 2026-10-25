@@ -1,7 +1,7 @@
 // Exercise the real queue callback and process shutdown: already sent model answers must settle
 // before the DB closes, and the next process must recover using those receipts.
 import { gate, pointModels, Reply, stub, tag } from "./setup.ts";
-import { analysisStep, SELECTING_SCORE, type AnalysisStep } from "./analysis-steps.ts";
+import { analysisStep, passingFactReview, SELECTING_SCORE, type AnalysisStep } from "./analysis-steps.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
@@ -18,6 +18,8 @@ let active: {
   structureAsked: ReturnType<typeof gate<void>>;
   scoreAnswer: ReturnType<typeof gate<void>>;
   structureAnswer: ReturnType<typeof gate<void>>;
+  reviewAsked?: ReturnType<typeof gate<void>>;
+  reviewAnswer?: ReturnType<typeof gate<void>>;
   writingAsked?: ReturnType<typeof gate<void>>;
   writingAnswer?: ReturnType<typeof gate<void>>;
   failScore: boolean;
@@ -31,11 +33,13 @@ const provider = await stub(async (_hit, request) => {
     if (active.failScore) return new Reply(503, { error: "temporary score outage" });
   }
   if (step === "structure" && count === 1) { active.structureAsked.open(); await active.structureAnswer.promise; }
+  if (step === "factReview" && active.reviewAnswer) { active.reviewAsked!.open(); await active.reviewAnswer.promise; }
   if (step === "understand" && active.writingAnswer) { active.writingAsked!.open(); await active.writingAnswer.promise; }
-  const content = step === "prefilter" ? { label: "PASS", reason: "AI model release" }
+  const content = step === "factReview" ? passingFactReview(request.body)
+    : step === "prefilter" ? { label: "PASS", reason: "AI model release" }
     : step === "score" ? { attentionScore: SELECTING_SCORE }
-      : step === "structure" ? { category: "ai-models", tags: ["模型发布"], subjects: [], fact: { title: "新模型发布" } }
-        : { itemType: "model_release", authorRole: "principal", tags: ["模型发布"], editorialJudgment: "模型有明确的能力提升", titleZh: `新模型发布 ${T}`, summaryZh: "模型发布并提供了评测和价格。" };
+      : step === "structure" ? { category: "products", tags: ["车型发布"], subjects: [], fact: { title: "新车型发布" } }
+        : { itemType: "vehicle_release", authorRole: "principal", tags: ["车型发布"], editorialJudgment: "模型有明确的能力提升", titleZh: `新车型发布 ${T}`, summaryZh: "车型发布并提供了评测和价格。" };
   return { id: `stub-${active.calls.length}`, choices: [{ message: { content: JSON.stringify(content) } }], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } };
 });
 const children = new Set<ReturnType<typeof spawn>>();
@@ -61,7 +65,7 @@ function worker(queue: string) {
   `;
   const env = { ...process.env, TEST_ANALYZE_QUEUE: queue, MODEL_CALLS_ENABLED: "true", AIHOT_CREDENTIALS_DIR: "/nonexistent-test-credentials" };
   pointModels(provider.url, undefined, env);
-  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+  const child = spawn(process.execPath, ["--import", "./tests/setup.ts", "--input-type=module", "-e", script], { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe", "ipc"] });
   children.add(child);
   const ready = gate();
   const stopping = gate();
@@ -84,13 +88,13 @@ before(async () => {
     VALUES (${SOURCE},'Analysis shutdown','rss','T1','editorial','2100-01-01')`;
 });
 after(async () => {
-  active?.scoreAnswer.open(); active?.structureAnswer.open(); active?.writingAnswer?.open();
+  active?.scoreAnswer.open(); active?.structureAnswer.open(); active?.reviewAnswer?.open(); active?.writingAnswer?.open();
   for (const child of children) child.kill("SIGTERM");
   await provider.close(); await stopBoss(); await closeDb();
 });
 
-test("SIGTERM during the final paid writing call still commits the complete analysis and publication", async () => {
-  active = { calls: [], scoreAsked: gate(), structureAsked: gate(), scoreAnswer: gate(), structureAnswer: gate(), writingAsked: gate(), writingAnswer: gate(), failScore: false };
+test("SIGTERM during the final paid fact review call still commits the complete analysis and publication", async () => {
+  active = { calls: [], scoreAsked: gate(), structureAsked: gate(), scoreAnswer: gate(), structureAnswer: gate(), reviewAsked: gate(), reviewAnswer: gate(), failScore: false };
   active.scoreAnswer.open(); active.structureAnswer.open();
   const queue = `test.analyze-stop-${T}-final`;
   const boss = await getBoss();
@@ -100,17 +104,45 @@ test("SIGTERM during the final paid writing call still commits the complete anal
     bodyStatus: "ok", language: "en", via: "fetch", publishedAt: new Date() });
   const jobId = await boss.send(queue, { articleId }, { singletonKey: articleId });
   const running = worker(queue);
-  await Promise.race([Promise.all([running.ready, active.writingAsked!.promise]), running.done.then(() => assert.fail("worker exited before writing"))]);
+  await Promise.race([Promise.all([running.ready, active.reviewAsked!.promise]), running.done.then(() => assert.fail("worker exited before fact review"))]);
   running.child.kill("SIGTERM"); await running.stopping;
-  active.writingAnswer!.open(); await running.done;
-  assert.deepEqual(active.calls.slice().sort(), ["prefilter", "score", "score", "structure", "understand"]);
+  active.reviewAnswer!.open(); await running.done;
+  assert.deepEqual(active.calls.slice().sort(), ["factReview", "prefilter", "score", "score", "structure", "understand"]);
   assert.equal((await sql`SELECT state FROM pgboss.job WHERE id=${jobId}`)[0]!.state, "completed");
   assert.equal((await sql`SELECT processing_state FROM articles WHERE id=${articleId}`)[0]!.processing_state, "analyzed");
   const [analysis] = await sql`SELECT selected,score,receipt_ids FROM analyses WHERE article_id=${articleId}`;
-  assert.equal(analysis!.selected, true); assert.equal(analysis!.score, SELECTING_SCORE); assert.equal(analysis!.receipt_ids.length, 5);
+  assert.equal(analysis!.selected, true); assert.equal(analysis!.score, SELECTING_SCORE); assert.equal(analysis!.receipt_ids.length, 6);
   assert.deepEqual({ ...(await sql`SELECT selected, selection_candidate FROM publications WHERE article_id=${articleId}`)[0] },
     { selected: false, selection_candidate: true }, "saved analysis nominates a candidate while news identity is pending");
-  assert.equal((await sql`SELECT 1 FROM receipts WHERE subject=${`article:${articleId}@1`} AND status='completed'`).length, 5);
+  assert.equal((await sql`SELECT 1 FROM receipts WHERE subject=${`article:${articleId}@1`} AND status='completed'`).length, 6);
+});
+
+test("SIGTERM during writing defers fact review and reuses the saved writing response after restart", async () => {
+  active = { calls: [], scoreAsked: gate(), structureAsked: gate(), scoreAnswer: gate(), structureAnswer: gate(), writingAsked: gate(), writingAnswer: gate(), failScore: false };
+  active.scoreAnswer.open(); active.structureAnswer.open();
+  const queue = `test.analyze-stop-${T}-before-review`;
+  const boss = await getBoss();
+  await boss.createQueue(queue, { policy: "short", retryLimit: 4, retryDelay: 0, expireInSeconds: 120 });
+  const { articleId } = await upsertMaterial({ sourceId: SOURCE, url: `https://example.org/analyze-stop-${T}/before-review`, title: `Model release awaiting review ${T}`,
+    bodyText: `A lab released a new AI model with benchmarks and prices. ${T} ` + "The release explains model capabilities and evaluation results. ".repeat(10),
+    bodyStatus: "ok", language: "en", via: "fetch", publishedAt: new Date() });
+  const jobId = await boss.send(queue, { articleId }, { singletonKey: articleId });
+  const first = worker(queue);
+  await Promise.race([Promise.all([first.ready, active.writingAsked!.promise]), first.done.then(() => assert.fail("worker exited before writing"))]);
+  first.child.kill("SIGTERM"); await first.stopping;
+  active.writingAnswer!.open(); await first.done;
+  assert.equal(active.calls.includes("factReview"), false, "shutdown cannot start another paid stage");
+  assert.equal((await sql`SELECT status FROM receipts WHERE subject=${`article:${articleId}@1`} AND purpose='understand_article'`)[0]!.status, "received");
+  assert.equal((await sql`SELECT 1 FROM analyses WHERE article_id=${articleId}`).length, 0);
+  assert.equal((await sql`SELECT 1 FROM publications WHERE article_id=${articleId}`).length, 0);
+  const second = worker(queue); await second.ready;
+  await until(async () => (await sql`SELECT state FROM pgboss.job WHERE id=${jobId}`)[0]?.state === "completed", "reviewed retry");
+  second.child.kill("SIGTERM"); await second.done;
+  assert.equal(active.calls.filter(step => step === "understand").length, 1, "saved writing is reused");
+  assert.equal(active.calls.filter(step => step === "factReview").length, 1);
+  const [result] = await sql`SELECT output,receipt_ids FROM analyses WHERE article_id=${articleId}`;
+  assert.equal(result!.output.factReview.status, "pass");
+  assert.equal(result!.receipt_ids.length, 6);
 });
 
 for (const failScore of [false, true]) test(`SIGTERM during ${failScore ? "failed" : "successful"} first score drains slower structure and leaves a retryable job`, async () => {
@@ -149,6 +181,6 @@ for (const failScore of [false, true]) test(`SIGTERM during ${failScore ? "faile
   assert.equal(active.calls.filter(s => s === "score").length, failScore ? 3 : 2, "two ordered successful scores, only a rejected request repeats");
   assert.equal(active.calls.filter(s => s === "understand").length, 1);
   const [result] = await sql`SELECT selected,score,receipt_ids FROM analyses WHERE article_id=${articleId}`;
-  assert.equal(result!.selected, true); assert.equal(result!.score, SELECTING_SCORE); assert.equal(result!.receipt_ids.length, 5);
+  assert.equal(result!.selected, true); assert.equal(result!.score, SELECTING_SCORE); assert.equal(result!.receipt_ids.length, 6);
   assert.equal((await sql`SELECT processing_attempts FROM articles WHERE id=${articleId}`)[0]!.processing_attempts, 0);
 });

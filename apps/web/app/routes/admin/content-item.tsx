@@ -32,6 +32,15 @@ function Step({ title, meta, children, tone = "accent", last }: { title: ReactNo
   );
 }
 
+function FactReview({ output }: { output: Record<string, unknown> }) {
+  const review = output.factReview as { status?: string; issues?: unknown; model?: string } | undefined;
+  const label = review?.status === "pass" ? "分析稿事实审核通过" : review?.status === "reject" ? "事实不一致 · 暂缓公开" : review?.status === "uncertain" ? "证据不足 · 暂缓公开" : output.factReviewRequired ? "缺少事实审核 · 暂缓公开" : "历史未审核或原文直出";
+  return <div className="mt-2">
+    <Badge tone={review?.status === "pass" ? "ok" : review || output.factReviewRequired ? "warn" : "muted"}>{label}</Badge>
+    {review && <Json value={review} label="事实审核证据" />}
+  </div>;
+}
+
 type Dialog = null | "visibility" | "seo" | "override" | "analyze" | "extract" | "presentation" | "group" | "detach" | "merge";
 
 export default function ContentItem({ loaderData }: Route.ComponentProps) {
@@ -74,7 +83,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
           <span>·</span>
           <Link className="hover:text-accent" to={`/admin/sources/${encodeURIComponent(a.source_id)}`}>{a.source_name}</Link>
           <span>·</span>
-          <a className="max-w-[420px] truncate hover:text-accent" href={a.url} target="_blank" rel="noreferrer">{a.url}</a>
+          <a className="max-w-full truncate hover:text-accent sm:max-w-[420px]" href={a.url} target="_blank" rel="noreferrer">{a.url}</a>
           {p?.visibility !== "withdrawn" && p && (
             <>
               <span>·</span>
@@ -103,7 +112,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
       </div>
       {a.processing_error && <div className="mb-5 rounded-card bg-hot-soft px-4 py-3 text-[13px] text-hot ring-1 ring-hot/20">{a.processing_error}</div>}
 
-      <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
+      <div className="grid min-w-0 grid-cols-1 gap-5 [overflow-wrap:anywhere] xl:grid-cols-[minmax(0,1fr)_360px] [&>section]:min-w-0 [&_pre]:whitespace-pre-wrap [&_pre]:[overflow-wrap:anywhere]">
         <Card title="处理链路">
           <ol className="pt-1">
             <Step title="信源" meta={`${KIND_LABEL[a.source_kind] ?? a.source_kind} · ${String(a.tier).replace("_", ".")} · ${MODE_LABEL[a.participation_mode] ?? a.participation_mode}`}>
@@ -156,6 +165,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
                       </div>
                       {an.title_zh && <div className="mt-2 font-medium text-ink">{an.title_zh}</div>}
                       {an.reason_zh && <div className="mt-1 text-[12.5px] leading-relaxed text-ink-3">{an.reason_zh}</div>}
+                      <FactReview output={an.output ?? {}} />
                       {an.receipts.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1.5 text-[11.5px]">
                           {an.receipts.map((r) => (

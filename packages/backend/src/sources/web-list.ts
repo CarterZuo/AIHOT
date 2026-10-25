@@ -1,3 +1,4 @@
+import { serverModules } from "../modules.ts";
 // Web list pages: HTML with selectors, Markdown through Jina Reader, and dated changelog sections.
 import * as cheerio from "cheerio";
 import { guardedFetch, languageHeaders, requireOk } from "../lib/http-fetch.ts";
@@ -81,7 +82,7 @@ async function fetchListingText(source: SourceRow): Promise<{ text: string; viaJ
     const page = await jinaRead(target, { purpose: "source_listing", subject: `source:${source.id}`, cacheToleranceSeconds: source.config.cacheToleranceSeconds, format, perRead: true });
     return { text: page.markdown, viaJina: true, base: source.config.baseUrl ?? target };
   }
-  const res = requireOk(await fetchListing(url, { headers: { accept: "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8", ...languageHeaders(source.config.acceptLanguage) }, timeoutMs: 25_000 }));
+  const res = requireOk(await fetchListing(url, { headers: { accept: "text/html,application/xhtml+xml,*/*;q=0.8", ...languageHeaders(source.config.acceptLanguage) }, timeoutMs: 25_000 }));
   const text = res.text();
   contentDocument(text);
   return { text, viaJina: false, base: source.config.baseUrl ?? res.url };
@@ -357,6 +358,8 @@ export interface DetailNeed {
  * needed; selectors and page metadata read the page's own HTML.
  */
 export async function fetchDetail(url: string, source: SourceRow, need: DetailNeed): Promise<PublicationDate & { title: string | null; summary: string | null; body: ExtractedBody | null }> {
+  const adapter = serverModules().map(m => m.sourceAdapters?.[source.config.adapter]).find(a => a?.kind === source.kind);
+  if (adapter?.detail) return adapter.detail(url, source);
   const d = source.config.detail ?? {};
   const offset = articleUtcOffset(source.config);
   const jinaListing = String(source.config.url ?? "").startsWith(JINA_PREFIX);

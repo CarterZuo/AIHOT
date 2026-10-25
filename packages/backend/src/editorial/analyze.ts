@@ -27,12 +27,13 @@ import { shutdownSignal } from "../jobs/queue.ts";
 import {
   buildArticlePrompt, buildLongTweetPrompt, buildShortTweetPrompt, finalizeCopy, isShortTweetInput, looksZh, MAX_BODY_CHARS, missingEvidence,
   needsShortTweetTranslation, parseTranslateOutput, PREFILTER_SYSTEM, prefilterUser, translateInputOf, UNDERSTAND_SYSTEM, understandUser,
-  type IdentityGuard,
+  type IdentityGuard, writingConditions,
 } from "./writing.ts";
 import { CATEGORY_GUIDE, CATEGORY_TAGS, ENTITIES, ENTITY_TAGS, ITEM_TYPES, normalizeTags, TOPIC_TAGS } from "./vocabulary.ts";
 import { promptText, promptVersion } from "./prompts.ts";
 import { originalPostCopy } from "../content/posts.ts";
 import { wordingProblems } from "./wording.ts";
+import { FACT_REVIEW_PROMPT_VERSION, factReviewPassed, reviewCopy } from "./fact-review.ts";
 
 export { buildMaterial, loadAnalyzeInput, type AnalyzeInputArticle };
 
@@ -43,6 +44,7 @@ export const PROMPT_VERSIONS = {
   summarize: promptVersion("summarize-article", "summarize-article-empty", "summarize-short-post", "summarize-short-post-quoted", "summarize-long-post", "summarize-long-post-quoted", "identity-context"),
   structure: promptVersion("structure"),
   wording: promptVersion("mend-wording"),
+  factReview: FACT_REVIEW_PROMPT_VERSION,
 } as const;
 /** Every step's prompt, as stored on each judgement. */
 export const SELECTION_PROMPT_VERSION = [PROMPT_VERSIONS.prefilter, PROMPT_VERSIONS.score].join("+");
@@ -209,6 +211,7 @@ export interface AnalysisRun {
     receiptIds: number[];
     reused: boolean;
   } | null;
+  factReview?: Awaited<ReturnType<typeof reviewCopy>> | null;
   structure: (ReturnType<typeof normalizeStructure> & { model: string; receiptId: number; reused: boolean }) | null;
 }
 
@@ -331,9 +334,9 @@ export async function runStructure(a: AnalyzeInputArticle, opts: StepOpts = {}):
 }
 
 /** Content understanding grounded in the original; null on a content-filter refusal. */
-export async function runUnderstand(a: AnalyzeInputArticle, opts: StepOpts = {}): Promise<AnalysisRun["writing"]> {
+export async function runUnderstand(a: AnalyzeInputArticle, opts: StepOpts = {}, conditions: unknown = []): Promise<AnalysisRun["writing"]> {
   const model = await modelFor("understand");
-  const text = understandUser(a);
+  const text = understandUser(a, conditions);
   const call = (image: ContentPart | null) => {
     checkAnalysisRunning();
     return chatJson({
@@ -413,7 +416,7 @@ async function mendWording(a: AnalyzeInputArticle, w: NonNullable<AnalysisRun["w
 }
 
 /** The title/summary prompts (articles, long and short posts). */
-async function runSummarize(a: AnalyzeInputArticle, opts: StepOpts): Promise<NonNullable<AnalysisRun["writing"]>> {
+async function runSummarize(a: AnalyzeInputArticle, opts: StepOpts, conditions: unknown = []): Promise<NonNullable<AnalysisRun["writing"]>> {
   const t = translateInputOf(a);
   const isX = t.sourceKind === "x_search";
   const short = isShortTweetInput(t);
@@ -430,7 +433,7 @@ async function runSummarize(a: AnalyzeInputArticle, opts: StepOpts): Promise<Non
     subject: subjectOf(a),
     promptVersion: PROMPT_VERSIONS.summarize,
     system: "",
-    user: short ? buildShortTweetPrompt(t) : isX ? buildLongTweetPrompt(t) : buildArticlePrompt(t),
+    user: [short ? buildShortTweetPrompt(t) : isX ? buildLongTweetPrompt(t) : buildArticlePrompt(t), writingConditions(conditions)].filter(Boolean).join("\n\n"),
     schema: SummarizeSchema,
     json: false,
     parse: parseTranslateOutput,
@@ -491,8 +494,12 @@ export async function runAnalysis(a: AnalyzeInputArticle, opts: StepOpts = {}): 
     if ("error" in s) throw s.error;
     const writing: NonNullable<AnalysisRun["writing"]> = original
       ? { kind: "verbatim", model: null, titleZh: original.title, summaryZh: original.summary ?? "", reasonZh: null, receiptIds: [], reused: true }
-      : await mendWording(a, (near ? await runUnderstand(a, opts) : null) ?? (await runSummarize(a, opts)), opts);
-    return { prefilter, scores, writing, structure: s.value };
+      : await mendWording(a, (near ? await runUnderstand(a, opts, s.value.fact?.conditions) : null) ?? (await runSummarize(a, opts, s.value.fact?.conditions)), opts);
+    writing.titleZh = collapseWhitespace(writing.titleZh);
+    writing.summaryZh = writing.summaryZh.trim();
+    const factReview = writing.kind === "understand" || writing.kind === "summarize"
+      ? await reviewCopy(a, writing, s.value.fact?.conditions, opts) : null;
+    return { prefilter, scores, writing, structure: s.value, factReview };
   } finally {
     // A score/writing error or deploy must not let the job finish while a paid structure request
     // still owns a response. It settles and stores its receipt before shutdown can close the DB.
@@ -510,7 +517,9 @@ export function normalizeAnalysis(run: AnalysisRun) {
   const values = run.scores && !run.scores.refused ? run.scores.values : null;
   const score = shownScore(run.scores);
   const threshold = run.scores?.threshold ?? null;
-  const selected = relevance === "pass" && scoresSelect(run.scores);
+  const factReviewRequired = run.writing?.kind === "understand" || run.writing?.kind === "summarize";
+  const qualityHeld = factReviewRequired && !factReviewPassed({ factReview: run.factReview }, { titleZh, summaryZh, reasonZh: run.writing?.reasonZh ?? null });
+  const selected = relevance === "pass" && !qualityHeld && scoresSelect(run.scores);
   const subjects = run.structure?.subjects ?? [];
   const tags = [...(run.structure?.tags ?? [])];
   for (const s of subjects) {
@@ -519,6 +528,8 @@ export function normalizeAnalysis(run: AnalysisRun) {
   }
   return {
     relevance,
+    qualityHeld,
+    factReviewRequired,
     selected,
     score,
     scores: values,
@@ -559,7 +570,7 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
   const out = normalizeAnalysis(run);
   const receiptIds = [
     ...(run.prefilter ? [run.prefilter.receiptId] : []), ...(run.scores?.receiptIds ?? []), ...(run.writing?.receiptIds ?? []),
-    ...(run.structure ? [run.structure.receiptId] : []),
+    ...(run.structure ? [run.structure.receiptId] : []), ...(run.factReview ? [run.factReview.receiptId] : []),
   ];
   const w = run.writing;
   const detail = {
@@ -567,7 +578,8 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
     scores: out.scores, scoreModel: out.scoreModel, threshold: out.threshold, ...(out.scoreRefused ? { scoreRefused: true } : {}),
     ...(w ? { writer: w.kind, writerModel: w.model, itemType: w.itemType ?? null, authorRole: w.authorRole ?? null } : {}),
     ...(w?.identityGuard?.outcome === "fallback" ? { identityGuard: w.identityGuard } : {}),
-    scope: out.scope, fact: out.fact,
+    scope: out.scope, fact: out.fact, factReviewRequired: out.factReviewRequired,
+    ...(run.factReview ? { factReview: run.factReview } : {}),
   };
   const committed = await sql.begin(async (tx) => {
     const [current] = await tx<{ revision: number }[]>`SELECT revision FROM articles WHERE id = ${articleId} FOR UPDATE`;
@@ -585,6 +597,6 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
     }
     return { analysisId: row!.id, stale };
   });
-  const reused = (run.prefilter?.reused ?? true) && (run.scores?.reused ?? true) && (w?.reused ?? true) && (run.structure?.reused ?? true);
+  const reused = (run.prefilter?.reused ?? true) && (run.scores?.reused ?? true) && (w?.reused ?? true) && (run.structure?.reused ?? true) && (run.factReview?.reused ?? true);
   return { analysisId: committed.analysisId, stale: committed.stale, output: out, receiptIds, reused };
 }

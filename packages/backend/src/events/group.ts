@@ -16,6 +16,7 @@
 // story get another look when a report founds a fact close to them (rematchSignals); history
 // (isHistorical) founds no event. Runs serially (queue concurrency 1).
 import { modelFor, modelRoute } from "../editorial/models.ts";
+import { factReviewPassed } from "../editorial/fact-review.ts";
 import { beijingDate, beijingMidnight } from "@aihot/contracts/time";
 import { sql, type Db, type Tx } from "../db.ts";
 import { newShortId, newUuid } from "../lib/ids.ts";
@@ -195,6 +196,8 @@ class GroupingSupersededError extends Error {}
 async function lockCurrentRevision(db: Db, articleId: string, revision: number) {
   const [current] = await db<{ revision: number }[]>`SELECT revision FROM articles WHERE id = ${articleId} FOR UPDATE`;
   if (current?.revision !== revision) throw new GroupingSupersededError("Grouping input changed; the replacement revision has its own analysis");
+  const [publication] = await db<{ visibility: string }[]>`SELECT visibility FROM publications WHERE article_id = ${articleId}`;
+  if (publication?.visibility === "withdrawn") throw new GroupingSupersededError("Grouping input was withdrawn while its judgement was in flight");
 }
 
 async function markGrouped(articleId: string, revision: number, selection?: SelectionValue, db: Db = sql) {
@@ -210,7 +213,7 @@ async function markGrouped(articleId: string, revision: number, selection?: Sele
 export interface GroupResult {
   verdict:
     | "same-fact" | "same-url" | "new-fact-in-story" | "new-story" | "roundup" | "kept" | "standalone" | "manual" | "skipped"
-    | "signal" | "signal-native" | "signal-unmatched" | "historical";
+    | "signal" | "signal-native" | "signal-unmatched" | "historical" | "quality-held";
   factId?: number;
   storyId?: number;
   /** Stories compared because this report tied them together (see consolidate). */
@@ -274,15 +277,25 @@ async function decide(articleId: string, opts: GroupOptions, revision: number, r
   const observedAt = a.published_at ?? a.discovered_at;
   const source = { id: a.source_id, signal_group_id: a.signal_group_id };
 
-  // Manual decisions win over any model decision: a manual membership, or "keep standalone".
+  const [an] = await sql<{ input_revision: number; relevance: string | null; title_zh: string | null; summary_zh: string | null; reason_zh: string | null; output: Record<string, any> | null; composite: boolean }[]>`
+    SELECT input_revision, relevance, title_zh, summary_zh, reason_zh, output, ${latestCompositeCondition(sql`${articleId}`)} AS composite
+    FROM analyses WHERE article_id = ${articleId} ORDER BY input_revision DESC, id DESC LIMIT 1`;
+  if (a.participation_mode === "editorial") {
+    const reviewed = an?.output?.factReviewRequired === true || an?.output?.factReview != null;
+    const [publication] = await sql<{ visibility: string }[]>`SELECT visibility FROM publications WHERE article_id = ${articleId}`;
+    if (publication?.visibility === "withdrawn" || (reviewed && (an.input_revision !== a.revision || !factReviewPassed(an.output, {
+      titleZh: an.title_zh ?? "", summaryZh: an.summary_zh ?? "", reasonZh: an.reason_zh,
+    })))) {
+      await markGrouped(articleId, a.revision);
+      return { verdict: "quality-held" };
+    }
+  }
+  // Manual decisions keep their membership, but cannot bypass a factual hold.
   const manual = await manualDecision(sql, articleId);
   if (manual) {
     await markGrouped(articleId, a.revision, { addsValue: true, reason: "人工确认的归属" });
     return { verdict: "manual", factId: manual.factId };
   }
-  const [an] = await sql<{ input_revision: number; relevance: string | null; title_zh: string | null; summary_zh: string | null; output: Record<string, any> | null; composite: boolean }[]>`
-    SELECT input_revision, relevance, title_zh, summary_zh, output, ${latestCompositeCondition(sql`${articleId}`)} AS composite
-    FROM analyses WHERE article_id = ${articleId} ORDER BY input_revision DESC, id DESC LIMIT 1`;
   if (an && an.input_revision !== a.revision && a.participation_mode === "editorial") {
     throw new GroupingSupersededError("Current material revision is still waiting for analysis");
   }

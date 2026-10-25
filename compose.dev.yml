@@ -1,0 +1,20 @@
+# Local database only. Application processes run on the host with hot reload.
+name: aihot-dev
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: aihot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Generate .env first}
+      POSTGRES_DB: aihot_dev
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aihot -d aihot_dev"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+volumes:
+  db: {}

@@ -11,6 +11,7 @@ import { evidenceCondition, listedCondition } from "./scope.ts";
 import { itemUrl, siteUrl } from "./links.ts";
 import { hasItemPage, publicSourceName } from "./rules.ts";
 import { topicLinks, topicMembership } from "./topics.ts";
+import { publicStoryTitle } from "./story-title.ts";
 
 interface DetailRow extends ItemRow {
   body_html: string | null;
@@ -107,9 +108,10 @@ export async function loadItemDetail(id: string, language: "zh" | "original" = "
   }
 
   const related = await sql<StoryRef[]>`
-    SELECT DISTINCT st.public_id::text AS "publicId", st.title
+    SELECT DISTINCT st.public_id::text AS "publicId", ${publicStoryTitle(sql`st.id`, sql`st.title`, now)} AS title
     FROM fact_articles fa JOIN facts f ON f.id = fa.fact_id JOIN stories st ON st.id = f.story_id
     WHERE fa.article_id = ${id} AND fa.role <> 'mention' AND st.merged_into IS NULL
+      AND ${publicStoryTitle(sql`st.id`, sql`st.title`, now)} IS NOT NULL
     ORDER BY "publicId" LIMIT 6`;
 
   let x: SiteItemDetail["x"] = null;

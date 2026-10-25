@@ -10,6 +10,7 @@ import { proxiedImage, proxiedImageSet } from "../media/imgproxy.ts";
 import { sourceOwnsPost } from "../sources/account.ts";
 import { displayTags, publicSourceName } from "./rules.ts";
 import { foldableSelectionCondition, seatedCondition } from "./scope.ts";
+import { publicStoryTitle } from "./story-title.ts";
 
 export interface ItemRow {
   id: string;
@@ -54,7 +55,7 @@ export const ITEM_COLUMNS = sql`
   p.body_mode, p.indexable, p.fact_id, s.name AS source_name, s.participation_mode AS source_mode,
   a.x_post, a.author, a.language,
   CASE WHEN s.kind = 'x_search' AND ${sourceOwnsPost(sql`s.config`, sql`a.x_post->>'handle'`)} THEN s.icon_url END AS author_avatar_url,
-  st.public_id::text AS story_public_id, st.title AS story_title,
+  st.public_id::text AS story_public_id, ${publicStoryTitle()} AS story_title,
   CASE WHEN p.channel = 'x' THEN tr.body_text END AS zh_text, qt.text_zh AS quoted_zh`;
 
 /** Public API listings never render article bodies, X media or story metadata. */
@@ -167,7 +168,7 @@ export function toItemSummary(row: ItemRow): ItemSummary {
     score: row.score === null ? null : Math.round(Number(row.score)),
     selected: row.selected,
     channel: row.channel,
-    story: row.story_public_id ? { publicId: row.story_public_id, title: row.story_title ?? "" } : null,
+    story: row.story_public_id && row.story_title !== null ? { publicId: row.story_public_id, title: row.story_title } : null,
   };
 }
 

@@ -15,6 +15,7 @@ import { updateSource } from "@aihot/backend/admin/sources";
 import { upsertMaterial } from "@aihot/backend/content/materials";
 import { stopBoss } from "@aihot/backend/jobs/queue";
 import { publishArticle, republishSource } from "@aihot/backend/publication/publish";
+import { copyHash, FACT_REVIEW_VERSION } from "@aihot/backend/editorial/fact-review";
 import { computeHotRanking } from "@aihot/backend/events/hot";
 import { latestHotRanking } from "@aihot/backend/publication/hot";
 import { loadItemShare } from "@aihot/backend/publication/og";
@@ -45,7 +46,7 @@ async function article(): Promise<string> {
     sourceId: SOURCE, url: `https://example.com/${T}-${n}`, title: `Test ${n}`, bodyText: BODY, bodyHtml: `<p>${BODY}</p>`, bodyStatus: "ok", via: "fetch", publishedAt: minuteAgo, discoveredAt: minuteAgo,
   });
   await sql`INSERT INTO analyses (article_id, input_revision, origin, relevance, category, title_zh, summary_zh, reason_zh, score, selected)
-            VALUES (${articleId}, 1, 'rule', 'pass', 'ai-models', ${`标题${n}-${T}`}, ${`SUMMARY-${n}-${T}`}, '理由', 90, true)`;
+            VALUES (${articleId}, 1, 'rule', 'pass', 'products', ${`标题${n}-${T}`}, ${`SUMMARY-${n}-${T}`}, '理由', 90, true)`;
   return articleId;
 }
 
@@ -59,11 +60,101 @@ async function storyFor(id: string, role: "report" | "mention" = "report"): Prom
   return publicId;
 }
 
+async function review(id: string, status: "pass" | "reject" | "uncertain" | "missing", hash?: string) {
+  const [a] = await sql<{ id: number; title_zh: string; summary_zh: string; reason_zh: string | null }[]>`
+    SELECT id, title_zh, summary_zh, reason_zh FROM analyses WHERE article_id = ${id} ORDER BY input_revision DESC, id DESC LIMIT 1`;
+  const copy = { titleZh: a!.title_zh, summaryZh: a!.summary_zh, reasonZh: a!.reason_zh };
+  const factReview = { version: FACT_REVIEW_VERSION, status, copyHash: hash ?? copyHash(copy),
+    evidence: ["titleZh", "summaryZh", "reasonZh"].map(field => ({ field, quote: BODY.trim() })), issues: [] };
+  await sql`UPDATE analyses SET output = ${sql.json(status === "missing" ? { factReviewRequired: true } : { factReviewRequired: true, factReview })} WHERE id = ${a!.id}`;
+  return copy;
+}
+
 const released = () => ({ releasedAt: new Date(Date.now() - 60_000) });
 async function get(url: string, headers: Record<string, string> = {}) {
   const res = await app.inject({ method: "GET", url, headers });
   return { status: res.statusCode, body: res.body, etag: res.headers.etag as string | undefined };
 }
+
+test("fact holds suppress every public exit and cannot be bypassed by editorial overrides", async () => {
+  for (const status of ["reject", "uncertain"] as const) {
+    const id = await article();
+    await review(id, "pass");
+    await publishArticle(id, released());
+    const story = await storyFor(id);
+    assert.equal((await get(`/api/site/items/${id}`)).status, 200);
+    const key = status === "reject" ? "2099-11-25" : "2099-11-26";
+    await sql`INSERT INTO reports (kind,key,window_start,window_end,content,generated_at,origin)
+      VALUES ('daily',${key},now()-interval '1 day',now(),${sql.json({ sections: [{ label: "News", items: [{ itemId: id, title: "Rejected report", summary: `FACT-HOLD-${id}` }] }] })},now(),'manual')`;
+    await review(id, status);
+    await overrideFields(id, { fields: { selected: true, summary: `MANUAL-${id}` }, reason: "cannot bypass factual hold", version: 0 }, "test");
+    const projection = (await sql`SELECT visibility,eligible,selected FROM publications WHERE article_id=${id}`)[0]!;
+    assert.deepEqual({ ...projection }, { visibility: "withdrawn", eligible: false, selected: false });
+    assert.equal((await sql`SELECT visibility FROM editorial_overrides WHERE article_id=${id}`)[0]!.visibility, null,
+      "the hold is not an editor withdrawal that would survive a passing review");
+    for (const path of [`/api/site/items/${id}`, `/items/${id}/markdown`, `/api/site/stories/${story}`, `/api/v1/stories/${story}`]) {
+      assert.equal((await get(path)).status, 404, path);
+    }
+    for (const path of ["/api/v1/items?mode=all&limit=1000", "/api/v1/selected/snapshot?limit=1000", "/feed.xml", "/feed/all.xml"]) {
+      assert.ok(!(await get(path)).body.includes(id), `${path} leaked a held item`);
+    }
+    assert.ok(!(await get(`/api/v1/dailies/${key}`)).body.includes(`FACT-HOLD-${id}`));
+    assert.equal((await sql`SELECT 1 FROM pool_search WHERE article_id=${id}`).length, 0);
+    assert.equal((await sql`SELECT summary_zh FROM analyses WHERE article_id=${id}`)[0]!.summary_zh.startsWith("SUMMARY-"), true,
+      "the rejected candidate remains available for diagnosis");
+    await overrideFields(id, { fields: {}, clear: ["summary", "selected"], reason: "remove test override", version: 1 }, "test");
+    await review(id, "pass");
+    await publishArticle(id, released());
+    assert.equal((await get(`/api/site/items/${id}`)).status, 200, "a valid new review restores the original public scope");
+  }
+});
+
+test("review admission binds the final public copy and the current material revision", async () => {
+  const id = await article();
+  await review(id, "missing");
+  await publishArticle(id, released());
+  assert.equal((await get(`/api/site/items/${id}`)).status, 404, "missing review fails closed");
+  await review(id, "pass", "wrong-copy");
+  await publishArticle(id);
+  assert.equal((await get(`/api/site/items/${id}`)).status, 404, "a pass for another draft cannot publish this one");
+  await review(id, "pass");
+  await publishArticle(id, released());
+  assert.equal((await get(`/api/site/items/${id}`)).status, 200);
+  await overrideFields(id, { fields: { reason: "Different unchecked claim", selected: true }, reason: "test unchecked reason", version: 0 }, "test");
+  assert.equal((await get(`/api/site/items/${id}`)).status, 404, "a reason override cannot reuse the original review");
+  await overrideFields(id, { fields: {}, clear: ["reason", "selected"], reason: "restore reviewed copy", version: 1 }, "test");
+  assert.equal((await get(`/api/site/items/${id}`)).status, 200);
+  await sql`UPDATE articles SET revision=revision+1 WHERE id=${id}`;
+  await publishArticle(id);
+  assert.equal((await get(`/api/site/items/${id}`)).status, 404, "a previous revision's review cannot admit updated material");
+});
+
+test("reviewed events and developments never reuse their old stored factual titles", async () => {
+  const id = await article();
+  const copy = await review(id, "pass");
+  const story = await storyFor(id);
+  await publishArticle(id, released());
+  const initial = JSON.parse((await get(`/api/site/stories/${story}`)).body);
+  assert.equal(initial.title, copy.titleZh);
+  assert.equal(initial.developments[0].title, copy.titleZh);
+  const other = await article();
+  const [fact] = await sql`SELECT f.id FROM facts f JOIN stories st ON st.id=f.story_id WHERE st.public_id=${story}`;
+  await sql`INSERT INTO fact_articles(fact_id,article_id,role) VALUES(${fact!.id},${other},'report')`;
+  await publishArticle(other, released());
+  await review(id, "reject");
+  await publishArticle(id);
+  const page = await get(`/api/site/stories/${story}`);
+  assert.equal(page.status, 200, "valid supporting reports retain the event");
+  const detail = JSON.parse(page.body);
+  const otherTitle = (await sql`SELECT title FROM publications WHERE article_id=${other}`)[0]!.title;
+  assert.equal(detail.title, otherTitle);
+  assert.equal(detail.developments[0].title, otherTitle);
+  assert.ok(!page.body.includes(`STORY-${T}`) && !page.body.includes(`FACT-${T}`) && !page.body.includes(copy.summaryZh));
+  const machine = JSON.parse((await get(`/api/v1/stories/${story}`)).body);
+  assert.equal(machine.story.title, otherTitle);
+  const linked = JSON.parse((await get(`/api/site/items/${other}`)).body);
+  assert.equal(linked.story.title, otherTitle, "item links use the same current event title");
+});
 
 // Failure modes: a revoked score falls back to the erroneous model score, zero is treated as
 // missing, republishing loses a correction, invalid scores or stale edits alter public state,

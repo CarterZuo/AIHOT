@@ -1,4 +1,5 @@
 // JSON sources: plain JSON APIs, JSON embedded in HTML (script tags, window variables).
+import { serverModules } from "../modules.ts";
 import { credential } from "../config.ts";
 import { languageHeaders, requireOk } from "../lib/http-fetch.ts";
 import { JINA_PREFIX, jinaRead } from "../providers/jina.ts";
@@ -140,6 +141,11 @@ function embeddedJson(html: string, source: SourceRow): unknown {
 
 export async function fetchJsonList(source: SourceRow): Promise<Candidate[]> {
   const c = source.config;
+  if (c.adapter) {
+    const adapter = serverModules().map(m => m.sourceAdapters?.[c.adapter]).find(a => a?.kind === "json_list");
+    if (!adapter) throw new FetchError(`Unknown JSON adapter ${c.adapter}`);
+    return adapter.listing(source);
+  }
   const url = String(c.url ?? "");
   const headers: Record<string, string> = { accept: "application/json, text/html;q=0.9", ...languageHeaders(c.acceptLanguage), ...(c.headers ?? {}) };
   if (/^https:\/\/api\.github\.com\//.test(url)) {

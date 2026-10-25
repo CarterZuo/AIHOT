@@ -196,18 +196,26 @@ type LookupCallback = (err: NodeJS.ErrnoException | null, address: string | Arra
  * it closes the gap between the URL check and the connection (DNS rebinding). `privateHosts` as in
  * assertPublicUrl.
  */
-export function guardedLookup(hostname: string, options: { all?: boolean; family?: number } | number, callback: LookupCallback, privateHosts: readonly string[] = []): void {
+export function guardedLookup(hostname: string, options: { all?: boolean; family?: number } | number, callback: LookupCallback, privateHosts: readonly string[] = [], resolve?: (host: string) => Promise<string[]>): void {
   const opts = typeof options === "number" ? { family: options } : options;
   const listed = privateHosts.includes(hostname.toLowerCase());
   if (!listed && blockedHostname(hostname.toLowerCase())) {
     callback(Object.assign(new Error(`Blocked host ${hostname}`), { code: "EBLOCKED" }), opts.all ? [] : "", 0);
     return;
   }
-  lookup(hostname, { all: true, family: opts.family ?? 0 }).then(
+  const resolved = resolve
+    ? resolve(hostname).then(addresses => addresses.map(address => ({ address, family: net.isIP(address) })))
+    : lookup(hostname, { all: true, family: opts.family ?? 0 });
+  resolved.then(
     (list) => {
       const bad = list.find((a) => refusedAddress(a.address, listed));
       if (bad || list.length === 0) {
         callback(Object.assign(new Error(`Blocked private address for ${hostname}`), { code: "EBLOCKED" }), opts.all ? [] : "", 0);
+        return;
+      }
+      list = list.filter(a => !opts.family || a.family === opts.family);
+      if (!list.length) {
+        callback(Object.assign(new Error(`No address for ${hostname}`), { code: "ENOTFOUND" }), opts.all ? [] : "", 0);
         return;
       }
       if (opts.all) callback(null, list);

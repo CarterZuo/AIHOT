@@ -61,7 +61,7 @@ test("ten consecutive failures within five minutes stop primary calls across ste
   assert.equal((await sql`SELECT 1 FROM receipts WHERE subject = ${request("group-during-outage").subject} AND service = 'deepseek'`).length, 0,
     "an open circuit does not reserve budget or record an unsent attempt");
   const source = `import {z} from 'zod'; import {chatJson} from '@aihot/backend/providers/llm'; import {closeDb} from '@aihot/backend/db'; const r=await chatJson({...${JSON.stringify({ ...request("restart"), schema: undefined })},schema:z.object({value:z.string()})}); console.log(r.model); await closeDb();`;
-  const child = spawn(process.execPath, ["--input-type=module", "-e", source], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, ["--import", "./tests/setup.ts", "--input-type=module", "-e", source], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
   let output = ""; let errors = "";
   child.stdout.on("data", chunk => { output += chunk; }); child.stderr.on("data", chunk => { errors += chunk; });
   assert.equal(await new Promise(resolve => child.on("exit", resolve)), 0, errors);

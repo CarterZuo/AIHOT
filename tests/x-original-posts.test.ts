@@ -2,7 +2,7 @@
 // them through another writer; rebuilding keeps old model replies or loses pool membership; stored
 // translations leak into detail/export or licensed full RSS drops media; real prose and fetched X Articles stop being written.
 import { pointModels, stub, tag } from "./setup.ts";
-import { analysisStep, SELECTING_SCORE } from "./analysis-steps.ts";
+import { analysisStep, passingFactReview, SELECTING_SCORE } from "./analysis-steps.ts";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
@@ -17,9 +17,10 @@ const requests: string[] = [];
 const provider = await stub((_hit, req) => {
   const step = analysisStep(req.body);
   requests.push(step);
-  const content = step === "prefilter" ? { label: "UNKNOWN", reason: "No standalone text evidence" }
+  const content = step === "factReview" ? passingFactReview(req.body)
+    : step === "prefilter" ? { label: "UNKNOWN", reason: "No standalone text evidence" }
     : step === "score" ? { attentionScore: req.body.includes("high-score") ? SELECTING_SCORE : 12 }
-    : step === "structure" ? { category: "ai-products", tags: [], subjects: [], scope: "single", fact: null }
+    : step === "structure" ? { category: "digital-ai", tags: [], subjects: [], scope: "single", fact: null }
     : step === "understand" ? { itemType: "product_update", authorRole: "principal", tags: [], editorialJudgment: "产品更新", titleZh: "实际正文标题", summaryZh: "这是实际正文的中文摘要。" }
     : "title_zh: 实际正文标题\nbody_zh: 这是实际正文的中文摘要。";
   return { choices: [{ message: { content: typeof content === "string" ? content : JSON.stringify(content) } }] };

@@ -12,6 +12,7 @@ import { compositeCondition, evidenceCondition, listedCondition, storyReportCond
 import { publicSourceName } from "./rules.ts";
 import { latestHotRanking, rankingExtras } from "./hot.ts";
 import { storyTexts } from "./story-text.ts";
+import { publicStoryTitle, reviewedFact } from "./story-title.ts";
 import { topicsOfStory } from "./topics.ts";
 import { itemUrl, storyUrl, v1StoryApiUrl, v1StoryUrl } from "./links.ts";
 
@@ -96,7 +97,7 @@ function reportView(r: ReportRow): StoryReportView {
 
 /** The story's reports newest first, its developments, and its latest and first non-mention reports. */
 async function storyContent(storyId: number, now: Date) {
-  const [s] = await sql<{ public_id: string; title: string }[]>`SELECT public_id::text, title FROM stories WHERE id = ${storyId}`;
+  const [s] = await sql<{ public_id: string; title: string | null }[]>`SELECT st.public_id::text, ${publicStoryTitle(sql`st.id`, sql`st.title`, now)} AS title FROM stories st WHERE st.id = ${storyId}`;
   if (!s) return null;
   const reports = await storyReports(storyId, now);
   if (reports.length === 0) return null;
@@ -105,8 +106,8 @@ async function storyContent(storyId: number, now: Date) {
   const primaryReports = reports.filter((r) => r.role !== "mention");
   const byFact = new Map<number, ReportRow[]>();
   for (const r of primaryReports) byFact.set(r.fact_id, [...(byFact.get(r.fact_id) ?? []), r]);
-  const facts = await sql<{ id: number; public_id: string; title: string }[]>`
-    SELECT id, public_id, title FROM facts WHERE story_id = ${storyId}`;
+  const facts = await sql<{ id: number; public_id: string; title: string; reviewed: boolean }[]>`
+    SELECT f.id, f.public_id, f.title, ${reviewedFact(sql`f.id`)} AS reviewed FROM facts f WHERE f.story_id = ${storyId}`;
   const developments = facts
     .filter((f) => byFact.has(f.id))
     .map((f) => {
@@ -114,7 +115,7 @@ async function storyContent(storyId: number, now: Date) {
       const selected = members.filter((r) => r.selected);
       const rep = pickRepresentative(selected.length ? selected : members);
       const first = members.reduce((m, r) => (r.at < m ? r.at : m), members[0]!.at);
-      return { factId: f.public_id, title: f.title, firstReportAt: first.toISOString(), reportCount: members.length, representative: rep };
+      return { factId: f.public_id, title: f.reviewed ? rep.title : f.title, firstReportAt: first.toISOString(), reportCount: members.length, representative: rep };
     })
     .sort((a, b) => Date.parse(b.firstReportAt) - Date.parse(a.firstReportAt));
 
@@ -126,7 +127,7 @@ async function storyContent(storyId: number, now: Date) {
 
 async function relatedStories(storyId: number, now: Date) {
   return sql<{ public_id: string; title: string; relation: "storyline" | "related" }[]>`
-    SELECT st.public_id::text, st.title, l.relation FROM story_links l JOIN stories st ON st.id = l.other_id
+    SELECT st.public_id::text, ${publicStoryTitle(sql`st.id`, sql`st.title`, now)} AS title, l.relation FROM story_links l JOIN stories st ON st.id = l.other_id
     LEFT JOIN LATERAL (
       SELECT count(*) FILTER (WHERE valid) AS reports, bool_and(valid) AS unchanged
       FROM ${relatedEvidence(sql`l.story_id`, sql`l.other_id`, now)} evidence
@@ -170,7 +171,7 @@ export async function loadStoryDetail(storyId: number, now = new Date()): Promis
   const origin = developments[developments.length - 1]?.representative;
   return {
     publicId: s.public_id,
-    title: s.title,
+    title: s.title ?? latestReport.title,
     status: storyStatusFor(latestAt, now.getTime()),
     reportCount: reports.length,
     sourceCount: new Set(reports.map((r) => r.source_id)).size,
@@ -324,7 +325,7 @@ export async function v1Story(storyId: number) {
     schemaVersion: 1 as const,
     story: {
       publicId: s.public_id,
-      title: s.title,
+      title: s.title ?? latestReport.title,
       status: storyStatusFor(latestAt, now.getTime()) === "settled" ? ("settled" as const) : ("active" as const),
       sourceCount: new Set(reports.map((r) => r.source_id)).size,
       reportCount: reports.length,

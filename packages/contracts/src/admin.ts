@@ -218,7 +218,7 @@ export interface AdminContentChain {
   revisions: Array<{ revision: number; title: string; content_hash: string | null; created_at: Timestamp }>;
   analyses: Array<{
     id: number; origin: string; model: string | null; prompt_version: string | null; input_revision: number; relevance: string | null; category: string | null;
-    score: number | null; selected: boolean | null; title_zh: string | null; reason_zh: string | null; created_at: Timestamp;
+    score: number | null; selected: boolean | null; title_zh: string | null; reason_zh: string | null; created_at: Timestamp; output: Record<string, unknown>;
     receipts: Array<{ id: number; status: string; service: string; model: string | null; cost: number | null; at: Timestamp }>;
   }>;
   publication: AdminPublication | null;
@@ -228,6 +228,25 @@ export interface AdminContentChain {
   decisions: Array<{ verdict: string; fact_id: number | null; story_id: number | null; receipt_id: number | null; candidates: unknown; created_at: Timestamp }>;
   deliveries: Array<{ target_key: string; dedupe_key: string; status: string; attempts: number; response: string | null; created_at: Timestamp; sent_at: Timestamp | null }>;
   history: AdminAuditEntry[];
+}
+
+// Reports
+
+/** Adopt an already reviewed native analysis; replacement prose cannot be supplied by the caller. */
+export interface AdminReportSummaryCorrection {
+  itemId: string;
+  expectedRevision: number;
+  expectedOldSummary: string;
+  analysisId: number;
+  reason: string;
+}
+
+export interface AdminReportSummaryCorrected {
+  reportId: number;
+  itemId: string;
+  analysisId: number;
+  revision: number;
+  summary: string;
 }
 
 // Feedback

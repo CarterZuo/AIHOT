@@ -3,7 +3,7 @@
 // understanding and the rest by the title/summary translation, a structure step gives the category,
 // subjects and fact. Material with only a feed summary has its page fetched first.
 import { pointModels, Reply, stub, tag } from "./setup.ts";
-import { analysisStep, type AnalysisStep } from "./analysis-steps.ts";
+import { analysisStep, passingFactReview, type AnalysisStep } from "./analysis-steps.ts";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
@@ -14,6 +14,7 @@ import { QUEUES, stopBoss } from "@aihot/backend/jobs/queue";
 import { compactAnswerFirstSummary, enforceIdentity, MAX_BODY_CHARS, parseTranslateOutput } from "@aihot/backend/editorial/writing";
 import { READER_WORDING } from "@aihot/industry/wording";
 import { ITEM_TYPES } from "@aihot/industry/taxonomy";
+import { normalizeFactReview } from "@aihot/backend/editorial/fact-review";
 
 const T = tag();
 const SOURCE = `test-analyze-${T}`;
@@ -21,7 +22,7 @@ const X_SOURCE = `test-analyze-x-${T}`;
 
 interface Req { step: AnalysisStep; marker: string; user: string }
 const requests: Req[] = [];
-const MARKERS = ["CLEAR", "RESCUE", "LOW", "OFFTOPIC", "BARE", "VAGUE", "THIN", "SENSITIVE", "推文", "WORDY", "REFUSAL", "RENUMBER", "UNMENDED"];
+const MARKERS = ["CLEAR", "RESCUE", "LOW", "OFFTOPIC", "BARE", "VAGUE", "THIN", "SENSITIVE", "推文", "WORDY", "REFUSAL", "RENUMBER", "UNMENDED", "REVIEWPASS", "REVIEWREJECT", "REVIEWUNCERTAIN", "REVIEWFORGED", "REVIEWFINAL"];
 // The scores sit a few points around the pack's T1 threshold and understand floor, so each case means
 // the same after a site recalibrates them: selected when the two add up to 2 × T1, written like a
 // selected item when they add up to more than 2 × FLOOR, translated otherwise.
@@ -31,6 +32,8 @@ const scoreAnswers: Record<string, number[]> = {
   CLEAR: [T1 + 3, T1 - 1], RESCUE: [FLOOR + 1, FLOOR], LOW: [FLOOR, FLOOR - 1], THIN: [T1, T1], SENSITIVE: [T1, T1], 推文: [FLOOR, FLOOR],
   BARE: [FLOOR - 2, FLOOR - 4], VAGUE: [T1, T1 + 2], WORDY: [T1, T1], REFUSAL: [T1, T1], RENUMBER: [T1, T1], UNMENDED: [T1, T1],
 };
+
+for (const marker of ["REVIEWPASS", "REVIEWREJECT", "REVIEWUNCERTAIN", "REVIEWFORGED", "REVIEWFINAL"]) scoreAnswers[marker] = [T1, T1];
 
 const WORDY = ["WORDY", "REFUSAL", "RENUMBER", "UNMENDED"];
 
@@ -43,6 +46,16 @@ const provider = await stub((_hit, req) => {
   const marker = MARKERS.find((m) => user.includes(m)) ?? "";
   requests.push({ step, marker, user });
   const answer = (content: unknown) => ({ id: `stub-${requests.length}`, model: "stub", choices: [{ message: { content: typeof content === "string" ? content : JSON.stringify(content) } }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
+  if (step === "factReview") {
+    const pass = passingFactReview(req.body);
+    if (marker === "REVIEWFORGED") return answer({ ...pass, evidence: pass.evidence.map(e => ({ ...e, quote: "Invented source sentence absent from the material." })) });
+    if (marker === "REVIEWREJECT" || marker === "REVIEWUNCERTAIN") return answer({
+      status: marker === "REVIEWREJECT" ? "reject" : "uncertain", evidence: pass.evidence,
+      issues: [{ field: "reasonZh", claim: `理由 ${marker}`, kind: "scope", quote: "a lab released a model",
+        reason: "The reason expands the source statement beyond its supported scope." }],
+    });
+    return answer(pass);
+  }
   if (step === "prefilter") return answer({ label: marker === "OFFTOPIC" || marker === "BARE" ? "BLOCK" : marker === "VAGUE" ? "UNKNOWN" : "PASS", reason: "测试" });
   if (step === "score") return answer({ attentionScore: scoreAnswers[marker]!.shift() });
   // Copy with a word a site keeps from readers (added to the pack's list below), and its mended form: whole (WORDY),
@@ -55,10 +68,12 @@ const provider = await stub((_hit, req) => {
     return answer({ titleZh: `标题里${unmended} ${marker}`, summaryZh: `${marker} 的摘要。第二句补充 ${marker === "RENUMBER" ? 4 : 3} 个数字。`, reasonZh: `理由里${unmended} ${marker}` });
   }
   if (step === "understand") {
+    if (marker === "REVIEWFINAL") return answer({ itemType: ITEM_TYPES[0], authorRole: "principal", tags: [], editorialJudgment: "仅高配提供空气悬架。",
+      titleZh: "  车型发布   配置细则  ", summaryZh: "车型发布并公布配置细则，明确高配版本提供空气悬架。" + "其余配置信息随后公布。".repeat(30) });
     if (marker === "SENSITIVE") return new Reply(400, { contentFilter: [{ level: 1, role: "user" }], error: { code: "1301", message: "系统检测到输入或生成内容可能包含不安全或敏感内容" } });
-    return answer({ itemType: "model_release", authorRole: "principal", tags: ["模型发布", "开源", "Agent", "不存在的标签"], editorialJudgment: `理由 ${marker}`, titleZh: `理解标题 ${marker}`, summaryZh: `理解摘要 ${marker}。第二句补充一个关键数字。` });
+    return answer({ itemType: "vehicle_release", authorRole: "principal", tags: ["车型发布", "开源", "Agent", "不存在的标签"], editorialJudgment: `理由 ${marker}`, titleZh: `理解标题 ${marker}`, summaryZh: `理解摘要 ${marker}。第二句补充一个关键数字。` });
   }
-  if (step === "structure") return answer({ category: "ai-models", tags: ["模型发布", "推理"], subjects: ["anthropic", "unknown-co"], scope: "single", fact: { title: `事实 ${marker}`, subject: "某公司", action: "发布", object: "模型", occurredAt: null, evidence: "a lab released a model", conditions: [] } });
+  if (step === "structure") return answer({ category: "products", tags: ["车型发布", "推理"], subjects: ["anthropic", "unknown-co"], scope: "single", fact: { title: `事实 ${marker}`, subject: "某公司", action: "发布", object: "模型", occurredAt: null, evidence: "a lab released a model", conditions: marker === "REVIEWFINAL" ? [{ quote: "Only the premium trim has air suspension." }] : [] } });
   return answer(`title_zh: 翻译标题 ${marker}\nsummary_zh: 翻译摘要 ${marker}。第二句补充影响。`);
 });
 pointModels(provider.url);
@@ -91,13 +106,13 @@ test("a selected item: prefilter, two scores, the content understanding and the 
   const id = await article("CLEAR");
   const res = await analyzeArticle(id);
   assert.deepEqual([res!.output!.selected, res!.output!.score], [true, T1 + 1], `${T1 + 3} + ${T1 - 1} >= 2 × ${T1}; the mean is shown`);
-  assert.deepEqual(calls("CLEAR").sort(), ["prefilter", "score", "score", "structure", "understand"]);
+  assert.deepEqual(calls("CLEAR").sort(), ["factReview", "prefilter", "score", "score", "structure", "understand"]);
   const r = await row(id);
-  assert.deepEqual([r.title_zh, r.reason_zh, r.category, r.receipt_ids.length], ["理解标题 CLEAR", "理由 CLEAR", "ai-models", 5]);
+  assert.deepEqual([r.title_zh, r.reason_zh, r.category, r.receipt_ids.length], ["理解标题 CLEAR", "理由 CLEAR", "products", 6]);
   // Failure case: the writer's independent labels contradict the structural category.
-  assert.deepEqual(r.tags, ["模型发布", "推理", "Anthropic"], "category and tags come from the same structural judgement, plus the verified subject tag");
+  assert.deepEqual(r.tags, ["车型发布", "推理", "Anthropic"], "category and tags come from the same structural judgement, plus the verified subject tag");
   assert.deepEqual(r.subjects, ["anthropic"]);
-  assert.deepEqual([r.output.writer, r.output.itemType, r.output.prefilter.label, r.output.fact.title], ["understand", "model_release", "PASS", "事实 CLEAR"]);
+  assert.deepEqual([r.output.writer, r.output.itemType, r.output.prefilter.label, r.output.fact.title], ["understand", "vehicle_release", "PASS", "事实 CLEAR"]);
   assert.equal(r.output.scope, "single");
   assert.equal(r.output.fact.evidence, "a lab released a model");
   const score = requests.find((q) => q.marker === "CLEAR" && q.step === "score")!;
@@ -114,7 +129,7 @@ test("a word the site keeps from readers goes back once to be changed; copy with
     const r = await row(id);
     assert.deepEqual([r.title_zh, r.reason_zh], ["标题里换了说法 WORDY", "理由里换了说法 WORDY"], "the mended copy is stored");
     const sent = requests.find((q) => q.marker === "WORDY" && q.step === "wording")!;
-    assert.ok(sent.user.includes("标题用了“禁用词”") && sent.user.includes("推荐理由用了“禁用词”"), "each use named");
+    assert.ok(sent.user.includes("标题用了“禁用词”") && sent.user.includes("关注价值用了“禁用词”"), "each use named");
     assert.ok(!requests.some((q) => q.step === "wording" && q.marker !== "WORDY"), "the other items' copy uses none");
   } finally {
     (READER_WORDING as Array<readonly [RegExp, string]>).pop();
@@ -149,7 +164,7 @@ test("structure retains grounded conditions, rejects invented or unseen quotes, 
     { text: "无限免费", quote: "Unlimited free access for everyone." },
     { text: "不在模型输入里的句子", quote: "This late detail was not sent." },
   ] };
-  const base = { category: "ai-models", tags: [], subjects: [], fact: frame };
+  const base = { category: "products", tags: [], subjects: [], fact: frame };
   const out = normalizeStructure(StructureSchema.parse(base), input);
   assert.ok(buildMaterial(input).includes("Only available in the US."), "a condition after the old 7000-character cutoff reaches the model");
   assert.ok(buildMaterial(input).includes("后文未提供"));
@@ -178,8 +193,8 @@ test("a near-selected item is written like a selected one; below the floor it is
   const lowId = await article("LOW");
   const low = await analyzeArticle(lowId);
   assert.deepEqual([low!.output!.selected, low!.output!.titleZh, low!.output!.reasonZh], [false, "翻译标题 LOW", null]);
-  assert.deepEqual(calls("LOW").sort(), ["prefilter", "score", "score", "structure", "summarize"]);
-  assert.deepEqual((await row(lowId)).tags, ["模型发布", "推理", "Anthropic"], "structure tags");
+  assert.deepEqual(calls("LOW").sort(), ["factReview", "prefilter", "score", "score", "structure", "summarize"]);
+  assert.deepEqual((await row(lowId)).tags, ["车型发布", "推理", "Anthropic"], "structure tags");
 });
 
 test("the prefilter's BLOCK stops everything; UNKNOWN with material goes on like PASS", async () => {
@@ -236,6 +251,13 @@ test("guards: a company the input does not name is not written in; long summarie
   // The identity lexicon: a Chinese rendering of a company the input names in English is no invention.
   const alibaba = { title: "Alibaba ships a new coding model", text: "Alibaba released a coding model with pricing details.", sourceKind: "rss" };
   assert.equal(enforceIdentity(alibaba, { titleZh: "阿里巴巴发布编程模型", summaryZh: "阿里巴巴发布了编程模型并公布价格。" }).identityGuard.outcome, "pass");
+  const mazda = { title: "长安马自达发布服务权益", text: "长安马自达公布本次服务权益及适用条件。", sourceKind: "web_list" };
+  assert.equal(enforceIdentity(mazda, { titleZh: "长安马自达发布服务权益", summaryZh: "长安马自达公布适用条件。" }).identityGuard.outcome, "pass");
+  for (const company of ["长安汽车", "马自达株式会社", "比亚迪"]) {
+    assert.equal(enforceIdentity(mazda, { titleZh: `${company}发布服务权益`, summaryZh: "公布适用条件。" }).identityGuard.outcome, "fallback", "the joint venture is not its shareholder or another brand");
+  }
+  const ambiguousMazda = { title: "马自达车型评测", text: "本文评测一款马自达车型。", sourceKind: "web_list" };
+  assert.equal(enforceIdentity(ambiguousMazda, { titleZh: "长安马自达车型评测", summaryZh: "长安马自达车型接受评测。" }).identityGuard.outcome, "fallback", "a brand name alone does not establish the joint venture");
   const long = "第一句交代了谁做了什么以及关键结果，这一句本身已经足够说明核心事件的来龙去脉。".repeat(3) + "第二句补充数字。".repeat(20);
   assert.ok(compactAnswerFirstSummary(long).length <= 190);
   // A short first sentence and a long second one: the card once ended "…可连接 Google Ads 和 Meta 账号在 Google。".
@@ -258,4 +280,68 @@ test("analysing the same revision again reuses every paid answer", async () => {
   const again = await analyzeArticle(id);
   assert.equal(provider.hits(), hits, "no new requests");
   assert.deepEqual([again!.reused, again!.receiptIds], [true, first!.receiptIds]);
+});
+
+
+test("fact review keeps relevance separate and holds rejected, uncertain or ungrounded copy", async () => {
+  for (const [marker, status] of [["REVIEWPASS", "pass"], ["REVIEWREJECT", "reject"], ["REVIEWUNCERTAIN", "uncertain"], ["REVIEWFORGED", "uncertain"]]) {
+    const id = await article(marker!);
+    const result = (await analyzeArticle(id))!;
+    const saved = await row(id);
+    assert.equal(result.output!.relevance, "pass", `${marker}: industry relevance is independent`);
+    assert.equal(result.output!.qualityHeld, status !== "pass");
+    assert.equal(result.output!.selected, status === "pass");
+    assert.equal(saved.output.factReview.status, status);
+    assert.equal(saved.output.factReviewRequired, true);
+    assert.ok(saved.title_zh.includes(marker!), "the rejected candidate remains available for diagnosis");
+    assert.equal(calls(marker!).filter(step => step === "factReview").length, 1, "no semantic rewriting loop");
+  }
+});
+
+test("fact review accepts visible original title evidence but rejects unseen body tails and metadata", () => {
+  const visible = "The premium trim offers air suspension.";
+  const unseen = "All trims offer rear wheel steering.";
+  const input = { id: `review-tail-${T}`, revision: 1, title: "Vehicle configuration", url: "https://example.org/configuration", author: null,
+    publishedAt: null, bodyText: visible + "x".repeat(MAX_BODY_CHARS) + unseen, excerpt: null, media: [], xPost: null,
+    source: { name: "Fixture", kind: "rss", tier: "T1", firstParty: true } };
+  const copy = { titleZh: "车型配置公布", summaryZh: "高配提供空气悬架。", reasonZh: null };
+  const review = (quote: string) => normalizeFactReview({ status: "pass", evidence: [
+    { field: "titleZh", quote }, { field: "summaryZh", quote },
+  ], issues: [] }, input, copy);
+  assert.equal(review(visible).status, "pass", "visible original evidence can support a complete candidate");
+  assert.ok(!input.bodyText.includes(input.title), "the original title is not repeated in the body");
+  const titleReview = review(input.title);
+  assert.equal(titleReview.status, "pass", "the visible original title can ground evidence independently of the body");
+  assert.deepEqual(titleReview.evidence, [{ field: "titleZh", quote: input.title }, { field: "summaryZh", quote: input.title }]);
+  for (const [quote, reason] of [
+    [unseen, "the saved original tail was not part of the reviewer input"],
+    [input.source.name, "visible source metadata is not original article evidence"],
+    ["Invented source sentence absent from the material.", "a forged quote is not original article evidence"],
+  ]) {
+    const result = review(quote!);
+    assert.equal(result.status, "uncertain", reason);
+    assert.deepEqual(result.evidence, [], "ungrounded quotes do not survive grounding");
+  }
+  for (const incomplete of [{ titleZh: "", summaryZh: "", reasonZh: null }, { titleZh: copy.titleZh, summaryZh: "", reasonZh: null }]) {
+    const checked = normalizeFactReview({ status: "pass", evidence: [{ field: "titleZh", quote: visible }], issues: [] }, input, incomplete);
+    assert.equal(checked.status, "uncertain", "empty or title-only copy cannot pass fact review");
+  }
+});
+
+test("writing receives grounded conditions and fact review reads the final normalized copy", async () => {
+  const id = await article("REVIEWFINAL", { bodyText: "REVIEWFINAL: a lab released a model. Only the premium trim has air suspension. " + LONG });
+  const result = (await analyzeArticle(id))!;
+  assert.equal(result.output!.qualityHeld, false);
+  const writer = requests.find(request => request.marker === "REVIEWFINAL" && request.step === "understand")!;
+  assert.ok(writer.user.includes("Only the premium trim has air suspension."), "condition reaches the writer");
+  assert.ok(writer.user.includes("【原文条件索引】"), "grounded extracted conditions are supplied separately from the body");
+  const reviewer = requests.find(request => request.marker === "REVIEWFINAL" && request.step === "factReview")!;
+  const { copy } = JSON.parse(reviewer.user);
+  assert.deepEqual(copy, { titleZh: result.output!.titleZh, summaryZh: result.output!.summaryZh, reasonZh: result.output!.reasonZh });
+  assert.equal(copy.titleZh, "车型发布 配置细则");
+  assert.ok(copy.summaryZh.length < 200, "the review runs after summary compaction");
+  const saved = await row(id);
+  assert.equal(saved.output.factReview.status, "pass");
+  const [receipt] = await sql`SELECT id FROM receipts WHERE id=ANY(${result.receiptIds}::bigint[]) AND purpose='review_article_facts' AND status='completed'`;
+  assert.ok(receipt, "review receipt completes atomically with the analysis");
 });

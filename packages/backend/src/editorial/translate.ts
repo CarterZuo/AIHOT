@@ -1,5 +1,5 @@
-// Full-text Chinese translations: made by the worker after an item
-// is selected, for sources whose full text may be shown on the site; a page read never translates.
+// Full-text Chinese translations: made by the worker for the site's configured public scope,
+// only where full text may be shown; a page read never translates.
 // Bodies are translated block by block (paragraphs, headings, list items, captions, table cells) so the
 // sanitised structure stays as it is. Inside a block, images and inline code never reach the model
 // (placeholders) and links keep only their text and an id; a block whose answer loses or repeats any of
@@ -10,6 +10,8 @@ import * as cheerio from "cheerio";
 import type { AnyNode, Element } from "domhandler";
 import { z } from "zod";
 import { sql } from "../db.ts";
+import { TRANSLATION } from "@aihot/site";
+import { listedCondition, selectedCondition } from "../publication/scope.ts";
 import { sanitizeBody, textToHtml } from "../content/sanitize.ts";
 import { rebaseTranslation } from "../content/presentation.ts";
 import { chatJson } from "../providers/llm.ts";
@@ -21,6 +23,11 @@ import { modelFor } from "./models.ts";
 import { shutdownSignal } from "../jobs/queue.ts";
 import { promptText, promptVersion } from "./prompts.ts";
 import { emit } from "../modules.ts";
+
+/** Use the same public boundary as the reading surfaces; never translate hidden material. */
+function translationScope(now: Date) {
+  return TRANSLATION.scope === "all-public" ? listedCondition(now) : selectedCondition(now);
+}
 
 export const TRANSLATE_PROMPT_VERSION = promptVersion("translate-body", "translate-post");
 const BATCH_CHARS = 3500;
@@ -173,8 +180,9 @@ export function unshield(translated: string, s: Shielded): string | null {
 }
 
 export async function translateArticle(articleId: string): Promise<TranslateResult> {
-  const [row] = await sql<{ revision: number; channel: string; language: string | null; body_html: string | null; body_text: string | null; x_post: { text?: string } | null; title: string; selected: boolean; body_mode: string; visibility: string }[]>`
-    SELECT a.revision, p.channel, a.language, a.body_html, a.body_text, a.x_post, p.title, p.selected, p.body_mode, p.visibility
+  const [row] = await sql<{ revision: number; channel: string; language: string | null; body_html: string | null; body_text: string | null; x_post: { text?: string } | null; title: string; selected: boolean; body_mode: string; visibility: string; translation_eligible: boolean }[]>`
+    SELECT a.revision, p.channel, a.language, a.body_html, a.body_text, a.x_post, p.title, p.selected, p.body_mode, p.visibility,
+      (${translationScope(new Date())}) AS translation_eligible
     FROM publications p JOIN articles a ON a.id = p.article_id WHERE p.article_id = ${articleId}`;
   if (!row) return { articleId, status: "skipped", reason: "not published" };
   const result = (r: Omit<TranslateResult, "articleId" | "revision">): TranslateResult => ({ articleId, revision: row.revision, ...r });
@@ -183,7 +191,7 @@ export async function translateArticle(articleId: string): Promise<TranslateResu
     for (const id of new Set(receiptIds)) await rejectReceivedResponse(id, `unusable translation: ${reason}`);
     return result({ status: "failed", reason });
   };
-  if (!row.selected || row.visibility !== "public" || row.body_mode !== "full") return result({ status: "skipped", reason: "not a selected full-text item" });
+  if (!row.translation_eligible || row.body_mode !== "full") return result({ status: "skipped", reason: "outside configured full-text translation scope" });
 
   if (row.channel === "x") {
     const text = String(row.x_post?.text ?? row.body_text ?? "").trim();
@@ -283,8 +291,8 @@ export async function translateQuotes(opts: { days?: number; limit?: number; bud
     FROM publications p JOIN articles a ON a.id = p.article_id
     CROSS JOIN LATERAL (SELECT substring(a.x_post->'quoted'->>'url' from '/status/([0-9]+)') AS tweet_id) q
     LEFT JOIN quote_translations qt ON qt.tweet_id = q.tweet_id
-    WHERE p.channel = 'x' AND p.selected AND p.visibility = 'public' AND p.body_mode = 'full'
-      AND p.discovered_at > now() - make_interval(days => ${opts.days ?? 3})
+    WHERE p.channel = 'x' AND ${translationScope(new Date())} AND p.body_mode = 'full'
+      AND (${TRANSLATION.scope === "all-public"} OR p.discovered_at > now() - make_interval(days => ${opts.days ?? 3}))
       AND q.tweet_id IS NOT NULL AND coalesce(a.x_post->'quoted'->>'text', '') <> ''
     ORDER BY q.tweet_id, p.discovered_at DESC`;
   let stored = 0;
@@ -335,8 +343,8 @@ export async function translateQuotes(opts: { days?: number; limit?: number; bud
 }
 
 /**
- * Every few minutes: selected full-text items discovered or revised in the last three days that lack a
- * translation of their current revision, then the posts selected X posts quote. Stops after a time
+ * Every few minutes: configured public full-text items lacking a current translation, then quoted
+ * posts. Selected-only mode keeps the three-day window; all-public also drains older items. Stops after a time
  * budget. A translation of an older revision is not shown (items.ts), so a revised item is translated
  * again whatever its age. Three failed attempts give an item up; only failures of the item itself count.
  */
@@ -347,9 +355,9 @@ export async function translatePending(opts: { limit?: number; budgetMs?: number
       CASE WHEN p.channel='x' THEN coalesce(a.x_post->>'text',a.body_text) ELSE a.body_text END AS text
     FROM publications p JOIN articles a ON a.id = p.article_id
     LEFT JOIN translations tr ON tr.article_id = p.article_id AND tr.lang = 'zh'
-    WHERE p.selected AND p.visibility = 'public' AND p.body_mode = 'full'
+    WHERE ${translationScope(new Date())} AND p.body_mode = 'full'
       AND (p.channel='x' OR a.body_html IS NOT NULL)
-      AND (p.discovered_at > now() - interval '3 days'
+      AND (${TRANSLATION.scope === "all-public"} OR p.discovered_at > now() - interval '3 days'
            OR EXISTS (SELECT 1 FROM article_revisions r WHERE r.article_id = a.id AND r.revision = a.revision AND r.revision > 1
                       AND r.created_at > now() - interval '3 days'))
       AND (tr.article_id IS NULL OR (tr.origin <> 'source' AND tr.revision < a.revision))

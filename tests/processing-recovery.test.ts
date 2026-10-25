@@ -1,6 +1,6 @@
 // Recovery must finish the same evaluation that failed, and commit the release, queue and audit together.
 import { gate, pointModels, Reply, stub, tag } from "./setup.ts";
-import { analysisStep, SELECTING_SCORE } from "./analysis-steps.ts";
+import { analysisStep, passingFactReview, SELECTING_SCORE } from "./analysis-steps.ts";
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import { after, afterEach, before, test } from "node:test";
@@ -31,10 +31,11 @@ const provider = await stub(async (_hit, request) => {
     refuseScore = false;
     return new Reply(503, { error: "temporary outage" });
   }
-  const content = step === "prefilter" ? { label: original ? "BLOCK" : "PASS", reason: "local fixture" }
+  const content = step === "factReview" ? passingFactReview(request.body)
+    : step === "prefilter" ? { label: original ? "BLOCK" : "PASS", reason: "local fixture" }
     : step === "score" ? { attentionScore: SELECTING_SCORE }
-    : step === "structure" ? { category: "ai-models", tags: [], subjects: [], fact: null }
-    : { itemType: "model_release", authorRole: "principal", tags: ["模型发布"], editorialJudgment: "模型能力提升", titleZh: `新判断 ${T}`, summaryZh: "模型发布并提供评测和价格。" };
+    : step === "structure" ? { category: "products", tags: [], subjects: [], fact: null }
+    : { itemType: "vehicle_release", authorRole: "principal", tags: ["车型发布"], editorialJudgment: "模型能力提升", titleZh: `新判断 ${T}`, summaryZh: "车型发布并提供评测和价格。" };
   return { choices: [{ message: { content: JSON.stringify(content) } }] };
 });
 pointModels(provider.url);

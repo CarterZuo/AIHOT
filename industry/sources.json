@@ -1,370 +1,276 @@
 {
-  "$comment": "示范信源：首次启动时导入（scripts/seed.ts），已存在的不会被覆盖。之后在后台“信源”里新建、修改和暂停。字段说明见 docs/customize.md。",
+  "$comment": "汽车产业情报首批国内公开免费信源。seed只新增；已有示例源须暂停。日期按+08:00。所有信源仅摘要和链接，开发全局采集保持关闭。试抓与覆盖边界见docs/automotive.md。",
   "sources": [
     {
-      "id": "rss-openai-news",
-      "name": "OpenAI News",
-      "kind": "rss",
+      "id": "auto-gov-policy",
+      "name": "中国政府网 · 最新政策",
+      "kind": "json_list",
       "config": {
-        "feedUrl": "https://openai.com/news/rss.xml",
+        "url": "https://www.gov.cn/zhengce/zuixin/ZUIXINZHENGCE.json",
+        "titlePaths": [
+          "TITLE"
+        ],
+        "publishedAtPath": "DOCRELPUBTIME",
+        "urlTemplate": "{raw:URL}",
         "_aihot": {
           "initialBackfillLimit": 8
-        }
+        },
+        "publishedAtUtcOffset": "+08:00",
+        "sortByPublishedAt": true
       },
       "tier": "T1",
-      "owner_entity_id": "openai",
+      "owner_entity_id": null,
       "participation_mode": "editorial",
       "interval_minutes": 120,
       "tags": [
-        "官方"
+        "国家政策",
+        "综合政策需汽车相关性预筛"
       ],
       "site_fulltext": false,
-      "syndicate_fulltext": false
+      "syndicate_fulltext": false,
+      "enabled": false
     },
     {
-      "id": "rss-google-deepmind",
-      "name": "Google DeepMind",
-      "kind": "rss",
+      "id": "auto-mofcom-export",
+      "name": "商务部外贸司 · 出口政策",
+      "kind": "web_list",
       "config": {
-        "feedUrl": "https://deepmind.google/blog/rss.xml",
+        "url": "https://wms.mofcom.gov.cn/zcfb/",
+        "itemSelector": "li:has(a[href*=\"/art/\"])",
+        "linkSelector": "a",
+        "publishedAtSelector": "span",
+        "allowUrlPrefixes": [
+          "https://wms.mofcom.gov.cn/zcfb/"
+        ],
         "_aihot": {
           "initialBackfillLimit": 8
-        }
+        },
+        "publishedAtUtcOffset": "+08:00",
+        "sortByPublishedAt": true
       },
       "tier": "T1",
-      "owner_entity_id": "google",
+      "owner_entity_id": null,
       "participation_mode": "editorial",
       "interval_minutes": 120,
       "tags": [
-        "官方"
+        "汽车出口",
+        "综合外贸需汽车相关性预筛"
       ],
       "site_fulltext": false,
-      "syndicate_fulltext": false
+      "syndicate_fulltext": false,
+      "enabled": false
     },
     {
-      "id": "rss-google-research",
-      "name": "Google Research",
-      "kind": "rss",
+      "id": "auto-mofcom-market",
+      "name": "商务部市场建设司 · 流通政策",
+      "kind": "web_list",
       "config": {
-        "feedUrl": "https://research.google/blog/rss/",
+        "url": "https://scjss.mofcom.gov.cn/zcfb/",
+        "itemSelector": "li:has(a[href*=\"/art/\"])",
+        "linkSelector": "a",
+        "publishedAtSelector": "span",
+        "allowUrlPrefixes": [
+          "https://scjss.mofcom.gov.cn/fgbz/"
+        ],
         "_aihot": {
           "initialBackfillLimit": 8
+        },
+        "publishedAtUtcOffset": "+08:00",
+        "sortByPublishedAt": true
+      },
+      "tier": "T1",
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "国家政策",
+        "汽车流通"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false,
+      "enabled": false
+    },
+    {
+      "id": "auto-cq-commerce",
+      "name": "重庆市商务委 · 政策与通知",
+      "kind": "web_list",
+      "config": {
+        "url": "https://sww.cq.gov.cn/",
+        "itemSelector": "li:has(a[href*=\"/zwgk_\"])",
+        "linkSelector": "a",
+        "publishedAtSelector": "span",
+        "allowUrlPrefixes": [
+          "https://sww.cq.gov.cn/zwgk_247/"
+        ],
+        "_aihot": {
+          "initialBackfillLimit": 8
+        },
+        "publishedAtUtcOffset": "+08:00",
+        "sortByPublishedAt": true
+      },
+      "tier": "T1",
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "地方政策",
+        "重庆",
+        "综合商务需汽车相关性预筛"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false,
+      "enabled": false
+    },
+    {
+      "id": "auto-mazda-news",
+      "name": "长安马自达 · 官方新闻",
+      "kind": "json_list",
+      "config": {
+        "url": "https://www.changan-mazda.com.cn/api/openapi/news/queryNewPage",
+        "method": "POST",
+        "bodyJson": {
+          "currentPage": 1,
+          "pageSize": 30
+        },
+        "itemsPath": "data.records",
+        "titlePaths": [
+          "newsTitle"
+        ],
+        "summaryPaths": [
+          "newsIntro"
+        ],
+        "publishedAtPath": "newsCtime",
+        "externalIdPath": "newsId",
+        "urlTemplate": "https://www.changan-mazda.com.cn/headlines/detail/?id={newsId}",
+        "_aihot": {
+          "initialBackfillLimit": 8
+        },
+        "publishedAtUtcOffset": "+08:00",
+        "sortByPublishedAt": true,
+        "adapter": "changan_mazda",
+        "detail": {
+          "maxFetches": 8,
+          "upgradeDatePrecision": true
         }
       },
       "tier": "T1",
-      "owner_entity_id": "google",
+      "owner_entity_id": "changan-mazda",
       "participation_mode": "editorial",
       "interval_minutes": 120,
       "tags": [
         "官方",
-        "研究"
+        "企业动态",
+        "产品动态"
       ],
       "site_fulltext": false,
-      "syndicate_fulltext": false
+      "syndicate_fulltext": false,
+      "enabled": false
     },
     {
-      "id": "rss-hugging-face",
-      "name": "Hugging Face Blog",
-      "kind": "rss",
+      "id": "auto-gasgoo-news",
+      "name": "盖世汽车 · 行业资讯",
+      "kind": "web_list",
       "config": {
-        "feedUrl": "https://huggingface.co/blog/feed.xml",
+        "url": "https://auto.gasgoo.com/",
+        "itemSelector": "a[href*=\"/news/\"]",
+        "allowUrlPrefixes": [
+          "https://auto.gasgoo.com/news/"
+        ],
+        "detail": {
+          "maxFetches": 8,
+          "publishedAtSelector": ".userInfo > span",
+          "publishedAtUtcOffset": "+08:00",
+          "summarySelector": "#ArticleContent"
+        },
         "_aihot": {
           "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T1",
-      "owner_entity_id": "hugging-face",
-      "participation_mode": "editorial",
-      "interval_minutes": 120,
-      "tags": [
-        "官方",
-        "开源"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-microsoft-research",
-      "name": "Microsoft Research",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://www.microsoft.com/en-us/research/feed/",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T1",
-      "owner_entity_id": "microsoft",
-      "participation_mode": "editorial",
-      "interval_minutes": 120,
-      "tags": [
-        "官方",
-        "研究"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-nvidia-blog",
-      "name": "NVIDIA Blog",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://blogs.nvidia.com/feed/",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T1",
-      "owner_entity_id": "nvidia",
-      "participation_mode": "editorial",
-      "interval_minutes": 120,
-      "tags": [
-        "官方"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-aws-ml",
-      "name": "AWS Machine Learning Blog",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://aws.amazon.com/blogs/machine-learning/feed/",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T1",
-      "owner_entity_id": null,
-      "participation_mode": "editorial",
-      "interval_minutes": 120,
-      "tags": [
-        "官方",
-        "教程"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-github-ai",
-      "name": "GitHub Blog · AI & ML",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://github.blog/ai-and-ml/feed/",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T1",
-      "owner_entity_id": null,
-      "participation_mode": "editorial",
-      "interval_minutes": 120,
-      "tags": [
-        "官方"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-mistral",
-      "name": "Mistral AI",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://mistral.ai/news/rss",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T1",
-      "owner_entity_id": null,
-      "participation_mode": "editorial",
-      "interval_minutes": 120,
-      "tags": [
-        "官方"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-bair",
-      "name": "Berkeley AI Research",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://bair.berkeley.edu/blog/feed.xml",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T1",
-      "owner_entity_id": null,
-      "participation_mode": "editorial",
-      "interval_minutes": 180,
-      "tags": [
-        "研究"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-the-verge-ai",
-      "name": "The Verge · AI",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
+        },
+        "publishedAtUtcOffset": "+08:00",
+        "sortByPublishedAt": true
       },
       "tier": "T2",
       "owner_entity_id": null,
       "participation_mode": "editorial",
-      "interval_minutes": 60,
+      "interval_minutes": 120,
       "tags": [
+        "企业动态",
+        "汽车出口",
+        "数字化与AI",
         "媒体"
       ],
       "site_fulltext": false,
-      "syndicate_fulltext": false
+      "syndicate_fulltext": false,
+      "enabled": false
     },
     {
-      "id": "rss-techcrunch-ai",
-      "name": "TechCrunch · AI",
-      "kind": "rss",
+      "id": "auto-mazda-complaints",
+      "name": "车质网 · 马自达投诉（待核实）",
+      "kind": "web_list",
       "config": {
-        "feedUrl": "https://techcrunch.com/category/artificial-intelligence/feed/",
+        "url": "https://www.12365auto.com/zlts/68-0-0-0-0-0_0-0-0-0-0-0-0-2.shtml",
+        "itemSelector": "tr:has(td.tsjs)",
+        "linkSelector": "td.tsjs a",
+        "publishedAtSelector": "td:nth-child(7)",
+        "allowUrlPrefixes": [
+          "https://www.12365auto.com/zlts/20"
+        ],
         "_aihot": {
           "initialBackfillLimit": 8
+        },
+        "publishedAtUtcOffset": "+08:00",
+        "sortByPublishedAt": true,
+        "detail": {
+          "maxFetches": 8,
+          "summarySelector": ".tsnr"
         }
       },
       "tier": "T2",
-      "owner_entity_id": null,
-      "participation_mode": "editorial",
-      "interval_minutes": 60,
-      "tags": [
-        "媒体"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-ars-technica-ai",
-      "name": "Ars Technica · AI",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://arstechnica.com/ai/feed/",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T2",
-      "owner_entity_id": null,
-      "participation_mode": "editorial",
-      "interval_minutes": 60,
-      "tags": [
-        "媒体"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-mit-tech-review-ai",
-      "name": "MIT Technology Review · AI",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://www.technologyreview.com/topic/artificial-intelligence/feed",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T2",
-      "owner_entity_id": null,
+      "owner_entity_id": "chezhiwang",
       "participation_mode": "editorial",
       "interval_minutes": 120,
       "tags": [
-        "媒体"
+        "客户投诉",
+        "用户陈述",
+        "含历史车型需核对主体"
       ],
       "site_fulltext": false,
-      "syndicate_fulltext": false
+      "syndicate_fulltext": false,
+      "enabled": false
     },
     {
-      "id": "rss-the-decoder",
-      "name": "The Decoder",
-      "kind": "rss",
+      "id": "auto-mazda-media",
+      "name": "车质网 · EZ-60媒体资讯与评测",
+      "kind": "web_list",
       "config": {
-        "feedUrl": "https://the-decoder.com/feed/",
+        "url": "https://www.12365auto.com/series/n4348-1-1.shtml",
+        "itemSelector": ".news_nr",
+        "linkSelector": "h2 a",
+        "publishedAtSelector": ".sj > span",
+        "publishedAtUtcOffset": "+08:00",
+        "allowUrlPrefixes": [
+          "https://www.12365auto.com/xcdg/",
+          "https://www.12365auto.com/review/",
+          "https://www.12365auto.com/scbg/",
+          "https://www.12365auto.com/news/",
+          "https://www.12365auto.com/series/"
+        ],
+        "sortByPublishedAt": true,
         "_aihot": {
           "initialBackfillLimit": 8
         }
       },
       "tier": "T2",
-      "owner_entity_id": null,
-      "participation_mode": "editorial",
-      "interval_minutes": 60,
-      "tags": [
-        "媒体"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-simon-willison",
-      "name": "Simon Willison",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://simonwillison.net/atom/everything/",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T2",
-      "owner_entity_id": null,
+      "owner_entity_id": "chezhiwang",
       "participation_mode": "editorial",
       "interval_minutes": 120,
       "tags": [
-        "个人"
+        "媒体",
+        "长安马自达",
+        "EZ-60"
       ],
       "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-import-ai",
-      "name": "Import AI",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://importai.substack.com/feed",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T2",
-      "owner_entity_id": null,
-      "participation_mode": "editorial",
-      "interval_minutes": 180,
-      "tags": [
-        "个人",
-        "周刊"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-latent-space",
-      "name": "Latent Space",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://www.latent.space/feed",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T2",
-      "owner_entity_id": null,
-      "participation_mode": "editorial",
-      "interval_minutes": 180,
-      "tags": [
-        "个人"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
+      "syndicate_fulltext": false,
+      "enabled": false
     }
   ]
 }

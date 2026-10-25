@@ -119,8 +119,14 @@ export function missingEvidence(a: AnalyzeInputArticle): boolean {
   return !a.bodyText?.trim() && !a.excerpt?.trim() && !String(a.xPost?.text ?? "").trim() && !String(a.xPost?.quoted?.text ?? "").trim();
 }
 
-export const understandUser = (a: AnalyzeInputArticle) =>
-  ["请按系统规则理解以下单篇材料，一次返回全部六个字段。", renderContext(a, { annotateQuoted: true })].join("\n\n");
+export const understandUser = (a: AnalyzeInputArticle, conditions: unknown = []) =>
+  ["请按系统规则理解以下单篇材料，一次返回全部六个字段。", renderContext(a, { annotateQuoted: true }),
+    writingConditions(conditions)].filter(Boolean).join("\n\n");
+
+export function writingConditions(conditions: unknown): string {
+  return Array.isArray(conditions) && conditions.length
+    ? `【原文条件索引】以下为已核对引句的辅助索引，可能遗漏；仍须通读原文，保留结论必需的边界、配置归属和当事方归因。\n${JSON.stringify(conditions)}` : "";
+}
 
 // Identity context and guard
 
